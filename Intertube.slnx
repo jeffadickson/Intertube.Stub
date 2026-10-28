@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/examples/">
+    <Project Path="examples/Intertube.Stub.Examples/Intertube.Stub.Examples.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/RedisLite.Cli/RedisLite.Cli.csproj" />
+    <Project Path="samples/RedisLite.Tests/RedisLite.Tests.csproj" />
+    <Project Path="samples/RedisLite/RedisLite.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Intertube.Stub/Intertube.Stub.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Intertube.Stub.Tests/Intertube.Stub.Tests.csproj" />
+  </Folder>
+</Solution>

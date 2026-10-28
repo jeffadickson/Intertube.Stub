@@ -1,0 +1,17 @@
+{
+  "stryker-config": {
+    "project": "RedisLite.csproj",
+    "test-projects": [ "RedisLite.Tests.csproj" ],
+    "reporters": [ "html", "json", "progress", "cleartext" ],
+    "mutation-level": "Standard",
+    "coverage-analysis": "perTest",
+    "concurrency": 6,
+    "additional-timeout": 5000,
+    "thresholds": { "high": 85, "low": 70, "break": 60 },
+    "ignore-methods": [
+      "ConfigureAwait",
+      "*Exception.ctor",
+      "FlushAsync"
+    ]
+  }
+}
