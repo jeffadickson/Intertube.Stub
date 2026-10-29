@@ -73,6 +73,8 @@ public sealed class OpenSsh : IDisposable
             "-o", "UserKnownHostsFile=known_hosts", "-o", "GlobalKnownHostsFile=ssh_config", "-o", "StrictHostKeyChecking=yes",
             "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "PasswordAuthentication=no", "-o", "ConnectTimeout=10",
             .. options,
+            // For diagnosing client behaviour in CI: INTERTUBE_SSH_LOGLEVEL=DEBUG3 puts ssh's view in the output.
+            .. Environment.GetEnvironmentVariable("INTERTUBE_SSH_LOGLEVEL") is { Length: > 0 } level ? ["-o", $"LogLevel={level}"] : Array.Empty<string>(),
             $"{user}@127.0.0.1",
         ];
         return await RunAsync("sftp", Scratch, args);
