@@ -52,10 +52,21 @@ STATEMENT: >>>
 ``SmtpServer.Start`` shall throw ``ArgumentException`` when ``ImplicitTls`` is true and ``Tls`` is null.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpServer.cs
+- SmtpServerTests.Start_RefusesTlsSettingsWithoutACertificate
 <<<
-COMMENT: >>>
-No automated test.
+
+[REQUIREMENT]
+UID: ITS-SMTP-081
+STATUS: Active
+TITLE: Required TLS requires a certificate
+STATEMENT: >>>
+``SmtpServer.Start`` shall throw ``ArgumentException`` when ``RequireTls`` is true and ``Tls`` is null.
+<<<
+RATIONALE: >>>
+Without a certificate TLS can never be established, so such a server would answer every ``MAIL`` with 530; failing at start makes the misconfiguration obvious instead of looking like a client bug.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.Start_RefusesTlsSettingsWithoutACertificate
 <<<
 
 [REQUIREMENT]
@@ -176,6 +187,7 @@ The EHLO reply shall advertise ``AUTH PLAIN LOGIN`` (after STARTTLS, if present)
 <<<
 VERIFIED_BY: >>>
 - SmtpServerTests.Auth_PlainAndLogin_AndMailRequiresIt
+- SmtpProtocolTests.Auth_WithNoUsers_IsNotEnabled_AndMailNeedsNoLogin
 <<<
 
 [REQUIREMENT]
@@ -208,10 +220,7 @@ STATEMENT: >>>
 A successful ``EHLO`` or ``HELO`` shall discard any mail transaction in progress (sender and recipients) and shall not change the authentication state.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.ResetCommands_DiscardTheTransaction_ButKeepTheLogin
 <<<
 
 [[/SECTION]]
@@ -227,10 +236,7 @@ STATEMENT: >>>
 ``MAIL`` before a successful ``EHLO`` or ``HELO`` shall be answered with ``503 5.5.1 Say EHLO first``.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Commands_OutOfOrder_GetA503_AndLeaveTheTransactionAlone
 <<<
 
 [REQUIREMENT]
@@ -256,10 +262,7 @@ RATIONALE: >>>
 RFC 5321 uses the null reverse path for bounces and other delivery notifications, which code under test may send.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Mail_NullReversePath_IsAccepted
 <<<
 
 [REQUIREMENT]
@@ -292,10 +295,7 @@ STATEMENT: >>>
 ``MAIL`` while a transaction is already in progress shall be answered with ``503 5.5.1 Nested MAIL command`` and shall leave the existing transaction unchanged.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Commands_OutOfOrder_GetA503_AndLeaveTheTransactionAlone
 <<<
 
 [REQUIREMENT]
@@ -351,10 +351,8 @@ STATEMENT: >>>
 ``RCPT`` outside a mail transaction shall be answered with ``503 5.5.1 Need MAIL first``.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Commands_OutOfOrder_GetA503_AndLeaveTheTransactionAlone
+- SmtpProtocolTests.Transaction_IsResetAfterData_WhateverTheOutcome
 <<<
 
 [REQUIREMENT]
@@ -365,10 +363,7 @@ STATEMENT: >>>
 ``RCPT`` whose argument does not start with ``TO:``, or whose address is missing or empty (including ``<>``), shall be answered with ``501 5.5.4 Syntax: RCPT TO:<address>`` and shall not add a recipient.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Rcpt_MalformedPath_Gets501_AndAddsNoRecipient
 <<<
 
 [REQUIREMENT]
@@ -379,10 +374,8 @@ STATEMENT: >>>
 ``DATA`` before any recipient has been accepted shall be answered with ``503 5.5.1 Need RCPT first``.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Commands_OutOfOrder_GetA503_AndLeaveTheTransactionAlone
+- SmtpProtocolTests.Rcpt_MalformedPath_Gets501_AndAddsNoRecipient
 <<<
 
 [REQUIREMENT]
@@ -432,6 +425,7 @@ Apart from dot-unstuffing and the removal of the terminating ``.`` line, ``SmtpM
 VERIFIED_BY: >>>
 - SmtpProtocolTests.Data_OnlyCrLfDotCrLfEndsTheMessage_AndLineEndingsAreKept
 - SmtpServerTests.DotStuffing_IsUndone_AndPipelinedCommandsAreAnswered
+- SmtpProtocolTests.Mime_BareLfLineEndings_SplitHeadersFromBody_AndDataIsKept
 <<<
 
 [REQUIREMENT]
@@ -464,10 +458,7 @@ STATEMENT: >>>
 After the end-of-data marker the transaction shall be reset whatever the outcome (accepted, too large or refused by an injected reply), so the client may start a new transaction with ``MAIL`` on the same connection.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Transaction_IsResetAfterData_WhateverTheOutcome
 <<<
 
 [REQUIREMENT]
@@ -505,10 +496,7 @@ STATEMENT: >>>
 ``RSET`` shall discard any mail transaction in progress and be answered with ``250 2.0.0 OK``, without changing the greeting or authentication state.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.ResetCommands_DiscardTheTransaction_ButKeepTheLogin
 <<<
 
 [REQUIREMENT]
@@ -519,10 +507,7 @@ STATEMENT: >>>
 ``NOOP`` shall be answered with ``250 2.0.0 OK`` without changing any state.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.OtherCommands_AreAnswered_AndLeaveTheTransactionAlone
 <<<
 
 [REQUIREMENT]
@@ -533,10 +518,7 @@ STATEMENT: >>>
 ``VRFY`` shall be answered with ``252 2.1.5 Cannot verify, but will accept`` and ``HELP`` with ``214 2.0.0 See RFC 5321``.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.OtherCommands_AreAnswered_AndLeaveTheTransactionAlone
 <<<
 
 [REQUIREMENT]
@@ -547,10 +529,7 @@ STATEMENT: >>>
 ``QUIT`` shall be answered with ``221 2.0.0 Bye`` and the server shall then close the connection.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test. The BCL and MailKit clients in the tests send QUIT, but no test asserts the reply or the close.
+- SmtpProtocolTests.Quit_Says221_AndClosesTheConnection
 <<<
 
 [REQUIREMENT]
@@ -561,10 +540,7 @@ STATEMENT: >>>
 Any unrecognised command shall be answered with ``500 5.5.1 Command not recognised`` and the session shall continue.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.OtherCommands_AreAnswered_AndLeaveTheTransactionAlone
 <<<
 
 [REQUIREMENT]
@@ -594,10 +570,8 @@ STATEMENT: >>>
 ``STARTTLS`` shall be answered with ``502 5.5.1 STARTTLS not available`` when ``Tls`` is not set or the connection already uses TLS.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.StartTls_WithoutACertificate_IsNotAvailable
+- SmtpProtocolTests.StartTls_WithAnArgument_Gets501_AndOnceOnTlsIsNotAvailable
 <<<
 
 [REQUIREMENT]
@@ -608,10 +582,7 @@ STATEMENT: >>>
 ``STARTTLS`` with an argument shall be answered with ``501 5.5.4 Syntax: STARTTLS`` and shall not start TLS.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.StartTls_WithAnArgument_Gets501_AndOnceOnTlsIsNotAvailable
 <<<
 
 [REQUIREMENT]
@@ -652,7 +623,7 @@ VERIFIED_BY: >>>
 - OrderNotifierTests.Confirmation_GoesOverTls_Authenticated_WithTheInvoiceAttached
 <<<
 COMMENT: >>>
-``RequireTls`` without ``Tls`` (and without ``ImplicitTls``) is accepted by ``Start`` but makes every ``MAIL`` fail, since TLS can never be established.
+``RequireTls`` without ``Tls`` is refused by ``Start`` (ITS-SMTP-081), so TLS can always be established.
 <<<
 
 [[/SECTION]]
@@ -668,10 +639,7 @@ STATEMENT: >>>
 When ``Users`` is null or empty, ``AUTH`` shall be answered with ``503 5.5.1 Authentication not enabled`` and ``MAIL`` shall not require authentication.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Auth_WithNoUsers_IsNotEnabled_AndMailNeedsNoLogin
 <<<
 
 [REQUIREMENT]
@@ -732,10 +700,7 @@ STATEMENT: >>>
 ``AUTH`` with a mechanism other than PLAIN or LOGIN (matched case-insensitively), or with none, shall be answered with ``504 5.5.4 Unrecognised authentication type``.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Auth_UnknownOrMissingMechanism_Gets504
 <<<
 
 [REQUIREMENT]
@@ -751,16 +716,13 @@ VERIFIED_BY: >>>
 
 [REQUIREMENT]
 UID: ITS-SMTP-056
-STATUS: Active
+STATUS: Rejected
 TITLE: No AUTH during a transaction
 STATEMENT: >>>
-``AUTH`` while a mail transaction is in progress shall be answered with ``503 5.5.1 AUTH not permitted during a mail transaction``.
+``AUTH`` while a mail transaction is in progress would be answered with ``503 5.5.1 AUTH not permitted during a mail transaction``.
 <<<
-VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test. In practice this is reachable only when the transaction began before authentication was required, which cannot happen while ``Users`` is set; the check is defensive.
+RATIONALE: >>>
+Unreachable by design. AUTH is enabled only when ``Users`` has an entry, and then ``MAIL`` requires a successful AUTH first (ITS-SMTP-050), so any session with a transaction in progress is already authenticated and AUTH gets ``503 5.5.1 Already authenticated`` (ITS-SMTP-057), which RFC 4954 section 4 equally allows. The dead branch was removed.
 <<<
 
 [REQUIREMENT]
@@ -768,13 +730,10 @@ UID: ITS-SMTP-057
 STATUS: Active
 TITLE: AUTH only once
 STATEMENT: >>>
-``AUTH`` after a successful authentication shall be answered with ``503 5.5.1 Already authenticated``.
+``AUTH`` after a successful authentication, including during a mail transaction, shall be answered with ``503 5.5.1 Already authenticated``, without a 334 challenge.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Auth_OnceAuthenticated_IsRefused_IncludingDuringATransaction
 <<<
 
 [REQUIREMENT]
@@ -796,10 +755,7 @@ STATEMENT: >>>
 A SASL response of ``=`` shall be treated as an empty string (RFC 4954 section 4).
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Auth_EqualsSignIsAnEmptyResponse
 <<<
 
 [REQUIREMENT]
@@ -1087,13 +1043,27 @@ UID: ITS-MIME-001
 STATUS: Active
 TITLE: Header fields in order, unfolded
 STATEMENT: >>>
-``SmtpMessage.Headers`` shall list the header fields of the top-level entity in order, each name trimmed, each value unfolded by removing the CRLF before a continuation line while keeping its leading whitespace, and trimmed at both ends.
+``SmtpMessage.Headers`` shall list the header fields of the top-level entity in order, each name trimmed, each value unfolded by removing the line break (CRLF or bare LF) before a continuation line while keeping its leading whitespace, and trimmed at both ends.
 <<<
 VERIFIED_BY: >>>
 - SmtpProtocolTests.Mime_FoldedHeaderKeepsItsWhitespace_AndEncodedWordsDecode
+- SmtpProtocolTests.Mime_BareLfLineEndings_SplitHeadersFromBody_AndDataIsKept
 <<<
-COMMENT: >>>
-Only CRLF is recognised as a line break in the header section; a message using bare LF line endings has no recognised header/body separator, so its whole content is read as headers.
+
+[REQUIREMENT]
+UID: ITS-MIME-017
+STATUS: Active
+TITLE: Bare LF line endings tolerated
+STATEMENT: >>>
+The MIME reading shall accept a bare LF as well as CRLF as a line ending: in the header section, in the blank line that separates the headers from the body (so the first empty line, however terminated, ends the headers), in multipart delimiter lines, and in quoted-printable soft line breaks. ``Data`` shall still hold the line endings exactly as sent.
+<<<
+RATIONALE: >>>
+Some clients and hand-written test messages use bare LF line endings; reading such a message as all headers with an empty body would make assertions on ``TextBody`` fail for no visible reason.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_BareLfLineEndings_SplitHeadersFromBody_AndDataIsKept
+- SmtpProtocolTests.Mime_BareLfMultipart_FindsThePlainTextPart
+- SmtpProtocolTests.Mime_PartStartingWithABlankLine_HasNoHeaders_AndIsPlainText
 <<<
 
 [REQUIREMENT]
@@ -1184,6 +1154,7 @@ A body with ``Content-Transfer-Encoding: quoted-printable`` shall be decoded, wi
 <<<
 VERIFIED_BY: >>>
 - SmtpProtocolTests.Mime_TextBodySkipsAttachments_AndSearchesNestedParts
+- SmtpProtocolTests.Mime_BareLfMultipart_FindsThePlainTextPart
 <<<
 
 [REQUIREMENT]
@@ -1216,10 +1187,12 @@ UID: ITS-MIME-011
 STATUS: Active
 TITLE: Multipart boundaries per RFC 2046
 STATEMENT: >>>
-An entity whose ``Content-Type`` is ``multipart/*`` with a non-empty ``boundary`` parameter (quoted or not) shall be split into parts at delimiter lines, ``--boundary`` preceded by CRLF (or at the start of the body); the preamble before the first delimiter and everything after the closing ``--boundary--`` shall be ignored, and boundary text that does not begin a line shall be treated as content.
+An entity whose ``Content-Type`` is ``multipart/*`` with a non-empty ``boundary`` parameter (quoted or not) shall be split into parts at delimiter lines, ``--boundary`` preceded by CRLF or a bare LF (or at the start of the body); the preamble before the first delimiter and everything after the closing ``--boundary--`` shall be ignored, and boundary text that does not begin a line shall be treated as content. Two adjacent delimiter lines shall enclose an empty part.
 <<<
 VERIFIED_BY: >>>
 - SmtpProtocolTests.Mime_TextBodySkipsAttachments_AndSearchesNestedParts
+- SmtpProtocolTests.Mime_BareLfMultipart_FindsThePlainTextPart
+- SmtpProtocolTests.Mime_AdjacentDelimiters_MakeAnEmptyPart_WithoutThrowing
 <<<
 
 [REQUIREMENT]
@@ -1230,10 +1203,7 @@ STATEMENT: >>>
 A body part that begins with a blank line shall be treated as having no header fields, and therefore as ``text/plain`` (RFC 2046 section 5.1.1).
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Smtp/SmtpMessage.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SmtpProtocolTests.Mime_PartStartingWithABlankLine_HasNoHeaders_AndIsPlainText
 <<<
 
 [REQUIREMENT]
@@ -1283,6 +1253,7 @@ Reading ``Headers``, ``Header``, ``Subject``, ``TextBody`` or ``ToString()`` sha
 <<<
 VERIFIED_BY: >>>
 - SmtpProtocolTests.Mime_MalformedEncodingsAreLeftAsSent_NeverThrown
+- SmtpProtocolTests.Mime_AdjacentDelimiters_MakeAnEmptyPart_WithoutThrowing
 <<<
 
 [[/SECTION]]

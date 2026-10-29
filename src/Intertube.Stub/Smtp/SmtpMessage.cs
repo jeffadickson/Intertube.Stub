@@ -6,7 +6,9 @@ namespace Intertube.Stub.Smtp;
 /// <summary>
 /// A message an <see cref="SmtpServer"/> accepted: the envelope, the raw data (dot-unstuffed, otherwise
 /// exactly as transmitted) and a light MIME reading of it. For full MIME parsing, hand <see cref="Data"/>
-/// to MimeKit. The MIME reading never throws: anything malformed is left as it was sent.
+/// to MimeKit. The MIME reading is lenient: it accepts a bare LF as well as CRLF as a line ending (for
+/// headers, the blank line before the body and multipart boundaries), and it never throws: anything
+/// malformed is left as it was sent.
 /// </summary>
 public sealed partial class SmtpMessage
 {
@@ -85,16 +87,18 @@ public sealed partial class SmtpMessage
         {
             // A part that starts with a blank line has no headers (RFC 2046: a default text/plain part).
             if (text.StartsWith("\r\n", StringComparison.Ordinal)) return new([], text[2..]);
-            var split = text.IndexOf("\r\n\r\n", StringComparison.Ordinal);
-            var headerText = split < 0 ? text : text[..split];
-            var body = split < 0 ? "" : text[(split + 4)..];
+            if (text.StartsWith('\n')) return new([], text[1..]);
+            var split = BlankLine().Match(text);
+            var headerText = split.Success ? text[..split.Index] : text;
+            var body = split.Success ? text[(split.Index + split.Length)..] : "";
 
             var headers = new List<KeyValuePair<string, string>>();
-            foreach (var line in headerText.Split("\r\n"))
+            foreach (var rawLine in headerText.Split('\n'))
             {
+                var line = rawLine.EndsWith('\r') ? rawLine[..^1] : rawLine;
                 if (line.Length > 0 && (line[0] == ' ' || line[0] == '\t') && headers.Count > 0)
                 {
-                    headers[^1] = new(headers[^1].Key, headers[^1].Value + line); // unfold: drop the CRLF, keep the whitespace
+                    headers[^1] = new(headers[^1].Key, headers[^1].Value + line); // unfold: drop the line break, keep the whitespace
                     continue;
                 }
                 var colon = line.IndexOf(':');
@@ -128,18 +132,23 @@ public sealed partial class SmtpMessage
                 return null;
             var delimiter = "--" + boundary;
             var parts = new List<Entity>();
-            var text = "\r\n" + body; // the CRLF before a delimiter belongs to it, including for the first one
+            var text = "\n" + body; // the line break (CRLF or LF) before a delimiter belongs to it, including for the first one
             var start = -1;
             var index = 0;
-            while ((index = text.IndexOf("\r\n" + delimiter, index, StringComparison.Ordinal)) >= 0)
+            while ((index = text.IndexOf("\n" + delimiter, index, StringComparison.Ordinal)) >= 0)
             {
-                var after = index + 2 + delimiter.Length;
+                var after = index + 1 + delimiter.Length;
                 var closing = string.CompareOrdinal(text, after, "--", 0, 2) == 0;
-                var lineEnd = text.IndexOf("\r\n", after, StringComparison.Ordinal);
-                if (start >= 0) parts.Add(Parse(text[start..index]));
+                var lineEnd = text.IndexOf('\n', after);
+                if (start >= 0)
+                {
+                    // A delimiter straight after another one shares its line break: the part between them is empty.
+                    var end = index > start && text[index - 1] == '\r' ? index - 1 : index;
+                    parts.Add(Parse(text[start..Math.Max(start, end)]));
+                }
                 if (closing || lineEnd < 0) break;
-                start = lineEnd + 2;
-                index = start - 2;
+                start = lineEnd + 1;
+                index = lineEnd;
             }
             return parts;
         }
@@ -177,6 +186,10 @@ public sealed partial class SmtpMessage
         return match.Success ? match.Groups["v"].Value : null;
     }
 
+    /// <summary>The blank line that ends a header section: two line breaks, each CRLF or a bare LF.</summary>
+    [GeneratedRegex(@"\r?\n\r?\n")]
+    private static partial Regex BlankLine();
+
     [GeneratedRegex(@"=\?(?<charset>[^?]+)\?(?<encoding>[BbQq])\?(?<text>[^?]*)\?=(\s+(?==\?))?")]
     private static partial Regex EncodedWord();
 
@@ -205,6 +218,8 @@ public sealed partial class SmtpMessage
             var c = text[i];
             if (c == '=' && i + 2 < text.Length && text[i + 1] == '\r' && text[i + 2] == '\n')
                 i += 2; // soft line break
+            else if (c == '=' && i + 1 < text.Length && text[i + 1] == '\n')
+                i += 1; // soft line break before a bare LF
             else if (c == '=' && i + 2 < text.Length && Uri.IsHexDigit(text[i + 1]) && Uri.IsHexDigit(text[i + 2]))
             {
                 bytes.Add(Convert.ToByte(text.Substring(i + 1, 2), 16));
