@@ -314,9 +314,9 @@ public sealed class Connection : IAsyncDisposable
                 OnPeerReset();
                 throw;
             }
-            catch (InvalidOperationException) when (IsTerminated)
+            catch (Exception ex) when (IsTerminated && IsTeardownArtefact(ex))
             {
-                throw ClosedException();
+                throw ClosedException(ex);
             }
             _reader.AdvanceTo(result.Buffer.End);
             if (result.IsCompleted) return;
@@ -409,9 +409,9 @@ public sealed class Connection : IAsyncDisposable
         {
             if (!_reader.TryRead(out pending)) return false;
         }
-        catch (InvalidOperationException) when (IsTerminated)
+        catch (Exception ex) when (IsTerminated && IsTeardownArtefact(ex))
         {
-            throw ClosedException();
+            throw ClosedException(ex);
         }
         count = pending.Buffer.Length;
         _reader.AdvanceTo(pending.Buffer.Start);
@@ -486,17 +486,22 @@ public sealed class Connection : IAsyncDisposable
             OnPeerReset();
             throw;
         }
-        catch (InvalidOperationException) when (IsTerminated)
+        catch (Exception ex) when (IsTerminated && IsTeardownArtefact(ex))
         {
-            throw ClosedException();
+            throw ClosedException(ex);
         }
     }
 
     /// <summary>
-    /// What a read throws once this side has closed or reset the connection: the pipe has been completed,
-    /// and its own <see cref="InvalidOperationException"/> would look like a bug in the handler.
+    /// What a read throws once this side has closed or reset the connection. The pipe has been completed and
+    /// the stream disposed, possibly under a read in progress, so the pipe can fail with its own exceptions
+    /// (<see cref="InvalidOperationException"/>, or <see cref="ArgumentOutOfRangeException"/> from a buffer
+    /// torn down mid-read), which would look like a bug in the handler.
     /// </summary>
-    private static ObjectDisposedException ClosedException() => new(nameof(Connection), "The connection has been closed.");
+    private static ObjectDisposedException ClosedException(Exception inner) => new("The connection has been closed.", inner);
+
+    /// <summary>A pipe failure caused by the teardown rather than the I/O failures callers already expect.</summary>
+    private static bool IsTeardownArtefact(Exception ex) => ex is not (IOException or ObjectDisposedException or OperationCanceledException);
 
     private async ValueTask<byte[]?> ReadFrameAsync(ReadOnlyMemory<byte> delimiter, bool returnPartialAtEnd, CancellationToken cancellationToken)
     {
