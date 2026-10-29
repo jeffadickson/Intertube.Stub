@@ -1,5 +1,5 @@
-using System.Buffers.Binary;
 using System.IO.Pipelines;
+using System.Runtime.ExceptionServices;
 
 namespace Intertube.Stub.Sftp.Ssh;
 
@@ -14,9 +14,25 @@ internal sealed class SshSession(SftpServer server, Connection connection)
     private readonly SshTransport _transport = new(connection, server.Algorithms);
     private readonly Dictionary<uint, SshChannel> _channels = [];
     private readonly List<Task> _subsystems = [];
+    private CancellationTokenSource? _lifetime;
     private uint _nextChannel;
 
     public async Task RunAsync()
+    {
+        Exception? fault;
+        try
+        {
+            await RunSessionAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            fault = await ShutdownAsync().ConfigureAwait(false);
+        }
+        // A subsystem bug is reported once the connection is cleaned up, unless the session itself failed first.
+        if (fault is not null) ExceptionDispatchInfo.Throw(fault);
+    }
+
+    private async Task RunSessionAsync()
     {
         var token = connection.CancellationToken;
         try
@@ -27,6 +43,7 @@ internal sealed class SshSession(SftpServer server, Connection connection)
             if (!await AcceptServiceAsync("ssh-userauth", token).ConfigureAwait(false)) return;
             var user = await AuthenticateAsync(token).ConfigureAwait(false);
             if (user is null) return;
+            _lifetime = CancellationTokenSource.CreateLinkedTokenSource(connection.CancellationToken, connection.Terminated);
             await RunConnectionAsync(user, token).ConfigureAwait(false);
         }
         catch (SshProtocolException ex)
@@ -40,12 +57,28 @@ internal sealed class SshSession(SftpServer server, Connection connection)
         {
             // The client went away mid-handshake or mid-packet.
         }
+    }
+
+    /// <summary>Stop every subsystem and release the transport; returns the first subsystem fault, if any.</summary>
+    private async Task<Exception?> ShutdownAsync()
+    {
+        foreach (var channel in _channels.Values) channel.Abort();
+        Exception? fault = null;
+        try
+        {
+            if (_lifetime is not null) await _lifetime.CancelAsync().ConfigureAwait(false);
+            await Task.WhenAll(_subsystems).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            fault = ex;
+        }
         finally
         {
-            foreach (var channel in _channels.Values) channel.Inbound.Writer.Complete();
-            await Task.WhenAll(_subsystems).ConfigureAwait(false);
+            _lifetime?.Dispose();
             _transport.Dispose();
         }
+        return fault;
     }
 
     private async Task<bool> AcceptServiceAsync(string service, CancellationToken token)
@@ -73,9 +106,9 @@ internal sealed class SshSession(SftpServer server, Connection connection)
             {
                 case "publickey" when request.Signature is null:
                     // A query: "would you accept this key?" Only a refusal is recorded; acceptance is followed by the signed attempt.
-                    if (KeyAllowed(request.User, request.Key))
+                    if (request.Key is { } offered && offered.Supports(request.KeyAlgorithm) && KeyAllowed(request.User, offered))
                     {
-                        await _transport.SendAsync(new SshWriter(SshMessage.UserAuthPkOk).String(request.KeyAlgorithm!).String(request.Key!.Blob.Span), token).ConfigureAwait(false);
+                        await _transport.SendAsync(new SshWriter(SshMessage.UserAuthPkOk).String(request.KeyAlgorithm!).String(offered.Blob.Span), token).ConfigureAwait(false);
                         continue;
                     }
                     Record(new SshAuthAttempt(request.User, "publickey", false, request.Key?.Fingerprint, connection.Id));
@@ -83,12 +116,16 @@ internal sealed class SshSession(SftpServer server, Connection connection)
 
                 case "publickey":
                 {
-                    var data = new SshWriter()
-                        .String(_transport.SessionId).Byte(SshMessage.UserAuthRequest)
-                        .String(request.User).String(request.Service).String("publickey").Bool(true)
-                        .String(request.KeyAlgorithm!).String(request.Key!.Blob.Span);
-                    var accepted = request.Service == "ssh-connection" && KeyAllowed(request.User, request.Key) && request.Key.Verify(data.Span, request.Signature);
-                    Record(new SshAuthAttempt(request.User, "publickey", accepted, request.Key.Fingerprint, connection.Id));
+                    var accepted = false;
+                    if (request.Key is { } key && request.Service == "ssh-connection" && KeyAllowed(request.User, key))
+                    {
+                        var data = new SshWriter()
+                            .String(_transport.SessionId).Byte(SshMessage.UserAuthRequest)
+                            .String(request.User).String(request.Service).String("publickey").Bool(true)
+                            .String(request.KeyAlgorithm!).String(key.Blob.Span);
+                        accepted = key.Verify(data.Span, request.Signature, request.KeyAlgorithm!);
+                    }
+                    Record(new SshAuthAttempt(request.User, "publickey", accepted, request.Key?.Fingerprint, connection.Id));
                     if (accepted) return await SucceedAsync(request.User, token).ConfigureAwait(false);
                     break;
                 }
@@ -125,8 +162,8 @@ internal sealed class SshSession(SftpServer server, Connection connection)
         return user;
     }
 
-    private bool KeyAllowed(string user, SshPublicKey? key) =>
-        key is not null && (server.Options.Users.Count == 0 || server.Options.Users.Any(u => u.Name == user && u.AuthorizedKeys.Contains(key)));
+    private bool KeyAllowed(string user, SshPublicKey key) =>
+        server.Options.Users.Count == 0 || server.Options.Users.Any(u => u.Name == user && u.AuthorizedKeys.Contains(key));
 
     private bool PasswordAllowed(string user, string password) =>
         server.Options.Users.Count == 0 || server.Options.Users.Any(u => u.Name == user && u.Password is not null && u.Password == password);
@@ -193,19 +230,28 @@ internal sealed class SshSession(SftpServer server, Connection connection)
                     break;
 
                 case SshMessage.ChannelWindowAdjust:
-                    Channel(message).AddWindow(BinaryPrimitives.ReadUInt32BigEndian(message.AsSpan(5)));
+                {
+                    var (channel, bytes) = Read(message, (ref r) => (r.UInt32(), r.UInt32()));
+                    Channel(channel).AddWindow(bytes);
                     break;
+                }
 
                 case SshMessage.ChannelData:
                 {
                     var channel = Channel(message);
                     var data = Read(message, (ref r) => { r.UInt32(); return r.String().ToArray(); });
-                    if (!channel.ClientEof) await channel.Inbound.Writer.WriteAsync(data, token).ConfigureAwait(false);
+                    channel.Received(data.Length);
+                    if (!channel.Started || channel.ClientEof) throw new SshProtocolException("Channel data with no subsystem to receive it.");
+                    await channel.Inbound.Writer.WriteAsync(data, token).ConfigureAwait(false);
                     break;
                 }
 
                 case SshMessage.ChannelExtendedData:
+                {
+                    var channel = Channel(message);
+                    channel.Received(Read(message, (ref r) => { r.UInt32(); r.UInt32(); return r.String().Length; }));
                     break;
+                }
 
                 case SshMessage.ChannelEof:
                 {
@@ -229,7 +275,8 @@ internal sealed class SshSession(SftpServer server, Connection connection)
                     break;
 
                 default:
-                    connection.Transcript.RecordMessage(TranscriptDirection.Event, $"ignored SSH message {message[0]}");
+                    connection.Transcript.RecordMessage(TranscriptDirection.Event, $"unimplemented SSH message {message[0]}");
+                    await _transport.SendAsync(new SshWriter(SshMessage.Unimplemented).UInt32(_transport.LastReceivedSequence), token).ConfigureAwait(false);
                     break;
             }
         }
@@ -238,9 +285,11 @@ internal sealed class SshSession(SftpServer server, Connection connection)
     private async Task OpenChannelAsync(byte[] message, CancellationToken token)
     {
         var (type, remoteId, window, maxPacket) = Read(message, (ref r) => (r.Utf8(), r.UInt32(), r.UInt32(), r.UInt32()));
-        if (type != "session")
+        if (type != "session" || maxPacket == 0)
         {
-            await _transport.SendAsync(new SshWriter(SshMessage.ChannelOpenFailure).UInt32(remoteId).UInt32(3).String($"Channel type {type} is not supported.").String(""), token).ConfigureAwait(false);
+            // 3 is SSH_OPEN_UNKNOWN_CHANNEL_TYPE, 1 SSH_OPEN_ADMINISTRATIVELY_PROHIBITED.
+            var (code, reason) = type != "session" ? (3u, $"Channel type {type} is not supported.") : (1u, "A maximum packet size of 0 is not usable.");
+            await _transport.SendAsync(new SshWriter(SshMessage.ChannelOpenFailure).UInt32(remoteId).UInt32(code).String(reason).String(""), token).ConfigureAwait(false);
             return;
         }
         var channel = new SshChannel(_transport, _nextChannel++, remoteId, window, maxPacket);
@@ -264,7 +313,8 @@ internal sealed class SshSession(SftpServer server, Connection connection)
         if (ok)
         {
             channel.Started = true;
-            _subsystems.Add(Task.Run(() => new SftpSession(server, connection, channel, user).RunAsync()));
+            var lifetime = _lifetime!.Token;
+            _subsystems.Add(Task.Run(() => new SftpSession(server, connection, channel, user, lifetime).RunAsync()));
         }
         else
         {
@@ -274,10 +324,10 @@ internal sealed class SshSession(SftpServer server, Connection connection)
             await _transport.SendAsync(new SshWriter(ok ? SshMessage.ChannelSuccess : SshMessage.ChannelFailure).UInt32(channel.RemoteId), token).ConfigureAwait(false);
     }
 
-    private SshChannel Channel(byte[] message) =>
-        _channels.TryGetValue(BinaryPrimitives.ReadUInt32BigEndian(message.AsSpan(1)), out var channel)
-            ? channel
-            : throw new SshProtocolException("Message for an unknown channel.");
+    private SshChannel Channel(byte[] message) => Channel(Read(message, (ref r) => r.UInt32()));
+
+    private SshChannel Channel(uint id) =>
+        _channels.TryGetValue(id, out var channel) ? channel : throw new SshProtocolException("Message for an unknown channel.");
 
     private delegate T ReaderFunc<T>(ref SshReader reader);
 
@@ -288,24 +338,29 @@ internal sealed class SshSession(SftpServer server, Connection connection)
     }
 }
 
-/// <summary>A session channel's flow control: the client's window for what we send, and ours for what it sends.</summary>
+/// <summary>
+/// A session channel's flow control: the client's window for what we send, and ours for what it sends.
+/// Sends are serialised, and nothing follows our CLOSE.
+/// </summary>
 internal sealed class SshChannel(SshTransport transport, uint localId, uint remoteId, uint remoteWindow, uint remoteMaxPacket)
 {
     public const uint LocalWindow = 2 * 1024 * 1024;
     public const uint LocalMaxPacket = 32 * 1024;
 
     private readonly object _lock = new();
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
     private long _remoteWindow = remoteWindow;
+    private long _localWindow = LocalWindow;
     private TaskCompletionSource _windowChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private long _consumed;
-    private int _closeSent;
+    private bool _closeSent;
     private bool _clientClosed;
 
     public uint LocalId { get; } = localId;
 
     public uint RemoteId { get; } = remoteId;
 
-    /// <summary>Bytes from the client. Unbounded here: the SSH window is what limits it.</summary>
+    /// <summary>Bytes from the client. Unbounded here: the SSH window, enforced by <see cref="Received"/>, is what limits it.</summary>
     public Pipe Inbound { get; } = new(new PipeOptions(pauseWriterThreshold: 0, useSynchronizationContext: false));
 
     public bool Started { get; set; }
@@ -320,6 +375,13 @@ internal sealed class SshChannel(SshTransport transport, uint localId, uint remo
             _windowChanged.TrySetResult();
             _windowChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
+    }
+
+    /// <summary>The client sent <paramref name="bytes"/> of data; it must fit our window and packet size.</summary>
+    public void Received(int bytes)
+    {
+        if (bytes > LocalMaxPacket) throw new SshProtocolException($"Channel data of {bytes} bytes exceeds the maximum packet size.");
+        if (Interlocked.Add(ref _localWindow, -bytes) < 0) throw new SshProtocolException("Channel data exceeds the window.");
     }
 
     /// <summary>Send data, waiting for window space and splitting to the client's packet size.</summary>
@@ -342,7 +404,8 @@ internal sealed class SshChannel(SshTransport transport, uint localId, uint remo
                 await wait.WaitAsync(token).ConfigureAwait(false);
                 continue;
             }
-            await transport.SendAsync(new SshWriter(SshMessage.ChannelData, chunk + 16).UInt32(RemoteId).String(data.Span[..chunk]), token).ConfigureAwait(false);
+            var payload = data[..chunk];
+            await SendLockedAsync(() => new SshWriter(SshMessage.ChannelData, chunk + 16).UInt32(RemoteId).String(payload.Span), token).ConfigureAwait(false);
             data = data[chunk..];
         }
     }
@@ -354,18 +417,29 @@ internal sealed class SshChannel(SshTransport transport, uint localId, uint remo
         if (_consumed < LocalWindow / 2) return;
         var adjust = (uint)_consumed;
         _consumed = 0;
-        await transport.SendAsync(new SshWriter(SshMessage.ChannelWindowAdjust).UInt32(RemoteId).UInt32(adjust), token).ConfigureAwait(false);
+        // Credit the window before the client can learn of it, so its next data never looks like an overrun.
+        Interlocked.Add(ref _localWindow, adjust);
+        await SendLockedAsync(() => new SshWriter(SshMessage.ChannelWindowAdjust).UInt32(RemoteId).UInt32(adjust), token).ConfigureAwait(false);
     }
 
     /// <summary>The subsystem finished: report exit status 0, then EOF and CLOSE.</summary>
     public async Task CloseAsync(CancellationToken token)
     {
-        if (Interlocked.Exchange(ref _closeSent, 1) != 0) return;
-        lock (_lock)
-            if (_clientClosed) return;
-        await transport.SendAsync(new SshWriter(SshMessage.ChannelRequest).UInt32(RemoteId).String("exit-status").Bool(false).UInt32(0), token).ConfigureAwait(false);
-        await transport.SendAsync(new SshWriter(SshMessage.ChannelEof).UInt32(RemoteId), token).ConfigureAwait(false);
-        await transport.SendAsync(new SshWriter(SshMessage.ChannelClose).UInt32(RemoteId), token).ConfigureAwait(false);
+        await _sendLock.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (_closeSent) return;
+            _closeSent = true;
+            lock (_lock)
+                if (_clientClosed) return;
+            await transport.SendAsync(new SshWriter(SshMessage.ChannelRequest).UInt32(RemoteId).String("exit-status").Bool(false).UInt32(0), token).ConfigureAwait(false);
+            await transport.SendAsync(new SshWriter(SshMessage.ChannelEof).UInt32(RemoteId), token).ConfigureAwait(false);
+            await transport.SendAsync(new SshWriter(SshMessage.ChannelClose).UInt32(RemoteId), token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
     }
 
     /// <summary>The client sent CLOSE; answer with ours unless already sent.</summary>
@@ -376,7 +450,42 @@ internal sealed class SshChannel(SshTransport transport, uint localId, uint remo
             _clientClosed = true;
             _windowChanged.TrySetResult();
         }
-        if (Interlocked.Exchange(ref _closeSent, 1) == 0)
+        await _sendLock.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (_closeSent) return;
+            _closeSent = true;
             await transport.SendAsync(new SshWriter(SshMessage.ChannelClose).UInt32(RemoteId), token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
+    }
+
+    /// <summary>The connection is gone: wake any sender waiting for window space and end the subsystem's input.</summary>
+    public void Abort()
+    {
+        lock (_lock)
+        {
+            _clientClosed = true;
+            _windowChanged.TrySetResult();
+        }
+        Inbound.Writer.Complete();
+    }
+
+    /// <summary>Send one message unless our CLOSE has gone, so nothing follows it.</summary>
+    private async ValueTask SendLockedAsync(Func<SshWriter> message, CancellationToken token)
+    {
+        await _sendLock.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            if (_closeSent) throw new IOException("The channel is closed.");
+            await transport.SendAsync(message(), token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
     }
 }

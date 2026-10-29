@@ -72,6 +72,9 @@ internal sealed class SshTransport(Connection connection, SshAlgorithms algorith
 
     public string? NegotiatedKeyExchange { get; private set; }
 
+    /// <summary>The sequence number of the last packet read, for SSH_MSG_UNIMPLEMENTED.</summary>
+    public uint LastReceivedSequence { get; private set; }
+
     /// <summary>Exchange versions and keys. Afterwards the connection is encrypted.</summary>
     public async Task HandshakeAsync(CancellationToken cancellationToken)
     {
@@ -136,6 +139,8 @@ internal sealed class SshTransport(Connection connection, SshAlgorithms algorith
                         _writeLock.Release();
                     }
                     continue;
+                case > SshMessage.KexInit and < 50:
+                    throw new SshProtocolException($"Key exchange message {payload[0]} outside a key exchange.");
                 default:
                     return payload;
             }
@@ -173,7 +178,7 @@ internal sealed class SshTransport(Connection connection, SshAlgorithms algorith
     private async ValueTask<byte[]> ReadPacketAsync()
     {
         var payload = await _receive.OpenAsync(_receiveSequence, count => connection.ReadExactlyAsync(count)).ConfigureAwait(false);
-        _receiveSequence++;
+        LastReceivedSequence = _receiveSequence++;
         if (payload.Length == 0) throw new SshProtocolException("Empty message.");
         return payload;
     }
@@ -208,7 +213,9 @@ internal sealed class SshTransport(Connection connection, SshAlgorithms algorith
         string[] clientKex, clientHostKey, cipherIn, cipherOut, macIn, macOut, compressionIn, compressionOut;
         bool guessFollows;
         {
-            var r = new SshReader(clientKexInit.AsSpan(17));
+            var r = new SshReader(clientKexInit);
+            r.Byte();
+            r.Bytes(16);
             clientKex = r.NameList();
             clientHostKey = r.NameList();
             cipherIn = r.NameList();
@@ -301,6 +308,7 @@ internal sealed class SshTransport(Connection connection, SshAlgorithms algorith
         if (_strict) _sendSequence = 0;
 
         var newKeys = await ReadPacketAsync().ConfigureAwait(false);
+        while (!_strict && newKeys[0] is SshMessage.Ignore or SshMessage.Debug) newKeys = await ReadPacketAsync().ConfigureAwait(false);
         if (newKeys[0] != SshMessage.NewKeys) throw new SshProtocolException($"Expected NEWKEYS but got message {newKeys[0]}.", SshProtocolException.KeyExchangeFailed);
         var (receiveKeySize, receiveIvSize) = PacketCipher.Sizes(receiveCipher);
         var oldReceive = _receive;

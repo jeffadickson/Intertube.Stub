@@ -118,10 +118,15 @@ public static class SftpPath
 
 /// <summary>
 /// Serves a real directory: <c>/</c> is <paramref name="root"/> and nothing outside it is reachable.
-/// The SFTP mirror of the classic "temp directory as remote" fixture.
+/// The SFTP mirror of the classic "temp directory as remote" fixture. Symbolic links and junctions
+/// inside the root are followed only while they lead to somewhere inside it.
 /// </summary>
 public sealed class DirectorySftpFileSystem(string root) : ISftpFileSystem
 {
+    private const int MaxLinkDepth = 32;
+
+    private static readonly StringComparison PathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
     /// <summary>The directory served as <c>/</c>.</summary>
     public string Root { get; } = Path.GetFullPath(root);
 
@@ -129,10 +134,40 @@ public sealed class DirectorySftpFileSystem(string root) : ISftpFileSystem
     public string LocalPath(string path)
     {
         var local = Path.GetFullPath(Path.Combine(Root, SftpPath.Normalize(path).TrimStart('/')));
-        var inside = local.Equals(Root, StringComparison.OrdinalIgnoreCase)
-            || local.StartsWith(Path.TrimEndingDirectorySeparator(Root) + Path.DirectorySeparatorChar, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
-        return inside ? local : throw new SftpException(SftpStatus.PermissionDenied, "Path outside the served root.");
+        if (!IsInside(local)) throw OutsideRoot();
+        CheckLinks(local, 0);
+        return local;
     }
+
+    private bool IsInside(string local)
+    {
+        var root = Path.TrimEndingDirectorySeparator(Root);
+        if (Path.TrimEndingDirectorySeparator(local).Equals(root, PathComparison)) return true;
+        // A drive or file system root keeps its separator ("C:\", "/"); anything else gets one added.
+        var prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
+        return local.StartsWith(prefix, PathComparison);
+    }
+
+    /// <summary>Refuse a path any of whose existing components is a link that leads outside the root.</summary>
+    private void CheckLinks(string local, int depth)
+    {
+        if (depth > MaxLinkDepth) throw new SftpException(SftpStatus.Failure, "Too many levels of symbolic links.");
+        var current = Path.TrimEndingDirectorySeparator(Root);
+        foreach (var part in Path.GetRelativePath(Root, local).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (part is "" or ".") continue;
+            current = Path.Combine(current, part);
+            var info = new FileInfo(current);
+            var attributes = info.Attributes;
+            if ((int)attributes == -1) return; // Nothing exists from here on.
+            if (!attributes.HasFlag(FileAttributes.ReparsePoint) || info.LinkTarget is not { } target) continue;
+            var resolved = Path.GetFullPath(target, Path.GetDirectoryName(current)!);
+            if (!IsInside(resolved)) throw OutsideRoot();
+            CheckLinks(resolved, depth + 1);
+        }
+    }
+
+    private static SftpException OutsideRoot() => new(SftpStatus.PermissionDenied, "Path outside the served root.");
 
     public SftpAttributes GetAttributes(string path)
     {
@@ -230,6 +265,21 @@ public sealed class InMemorySftpFileSystem : ISftpFileSystem
     /// <summary>Clock for timestamps; replace it for deterministic listings.</summary>
     public Func<DateTimeOffset> Clock { get; set; } = () => DateTimeOffset.UtcNow;
 
+    /// <summary>
+    /// The largest file a client may make, 1 GiB by default; writes or size changes beyond it fail.
+    /// At most <see cref="Array.MaxLength"/>, since each file is one array.
+    /// </summary>
+    public long MaxFileSize
+    {
+        get;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(value, Array.MaxLength);
+            field = value;
+        }
+    } = 1L << 30;
+
     /// <summary>Create or replace a file, creating parent directories as needed.</summary>
     public InMemorySftpFileSystem AddFile(string path, ReadOnlySpan<byte> content)
     {
@@ -315,6 +365,8 @@ public sealed class InMemorySftpFileSystem : ISftpFileSystem
     {
         lock (_lock)
         {
+            path = SftpPath.Normalize(path);
+            if (path == "/") throw new SftpException(SftpStatus.Failure, "Is a directory.");
             var parent = Find(SftpPath.Parent(path));
             if (parent is not { IsDirectory: true }) throw NotFound();
             var name = SftpPath.Name(path);
@@ -344,7 +396,7 @@ public sealed class InMemorySftpFileSystem : ISftpFileSystem
         lock (_lock)
         {
             var node = Find(path) ?? throw NotFound();
-            if (attributes.Size is { } size && !node.IsDirectory) node.Content.SetLength(size);
+            if (attributes.Size is { } size && !node.IsDirectory) SetSize(node, size);
             if (attributes.Permissions is { } mode) node.Mode = mode & 0xFFF;
             if (attributes.LastWriteTime is { } modified) node.Modified = modified;
         }
@@ -354,6 +406,8 @@ public sealed class InMemorySftpFileSystem : ISftpFileSystem
     {
         lock (_lock)
         {
+            path = SftpPath.Normalize(path);
+            if (path == "/") throw new SftpException(SftpStatus.Failure, "Already exists.");
             var parent = Find(SftpPath.Parent(path));
             if (parent is not { IsDirectory: true }) throw NotFound();
             if (!parent.Children.TryAdd(SftpPath.Name(path), Node.Directory(Clock())))
@@ -387,11 +441,15 @@ public sealed class InMemorySftpFileSystem : ISftpFileSystem
     {
         lock (_lock)
         {
+            source = SftpPath.Normalize(source);
+            destination = SftpPath.Normalize(destination);
+            if (source == "/" || destination == "/") throw new SftpException(SftpStatus.PermissionDenied, "Cannot rename the root.");
             var fromParent = Find(SftpPath.Parent(source));
             if (fromParent is null || !fromParent.Children.TryGetValue(SftpPath.Name(source), out var node)) throw NotFound();
             var toParent = Find(SftpPath.Parent(destination));
             if (toParent is not { IsDirectory: true }) throw NotFound();
-            if (destination == source || destination.StartsWith(source + "/", StringComparison.Ordinal))
+            if (destination == source) return;
+            if (destination.StartsWith(source + "/", StringComparison.Ordinal))
                 throw new SftpException(SftpStatus.Failure, "Cannot move a directory into itself.");
             if (toParent.Children.TryGetValue(SftpPath.Name(destination), out var existing) && (!overwrite || existing.IsDirectory || node.IsDirectory))
                 throw new SftpException(SftpStatus.Failure, "Destination exists.");
@@ -428,6 +486,14 @@ public sealed class InMemorySftpFileSystem : ISftpFileSystem
         : SftpAttributes.ForFile(node.Content.Length, node.Modified) with { Permissions = SftpAttributes.FileType | node.Mode };
 
     private static SftpException NotFound() => new(SftpStatus.NoSuchFile, "No such file.");
+
+    private void SetSize(Node node, long size)
+    {
+        if (size < 0 || size > MaxFileSize) throw TooLarge();
+        node.Content.SetLength(size);
+    }
+
+    private static SftpException TooLarge() => new(SftpStatus.Failure, "File size limit exceeded.");
 
     private sealed class Node
     {
@@ -470,6 +536,7 @@ public sealed class InMemorySftpFileSystem : ISftpFileSystem
             if (!CanRead) throw new SftpException(SftpStatus.PermissionDenied, "Not opened for reading.");
             lock (owner._lock)
             {
+                if (Position < 0 || Position >= node.Content.Length) return 0;
                 node.Content.Position = Position;
                 var read = node.Content.Read(buffer, offset, count);
                 Position += read;
@@ -482,6 +549,7 @@ public sealed class InMemorySftpFileSystem : ISftpFileSystem
             if (!CanWrite) throw new SftpException(SftpStatus.PermissionDenied, "Not opened for writing.");
             lock (owner._lock)
             {
+                if (Position < 0 || Position > owner.MaxFileSize - count) throw TooLarge();
                 node.Content.Position = Position;
                 node.Content.Write(buffer, offset, count);
                 Position += count;
@@ -498,7 +566,8 @@ public sealed class InMemorySftpFileSystem : ISftpFileSystem
 
         public override void SetLength(long value)
         {
-            lock (owner._lock) node.Content.SetLength(value);
+            if (!CanWrite) throw new SftpException(SftpStatus.PermissionDenied, "Not opened for writing.");
+            lock (owner._lock) owner.SetSize(node, value);
         }
 
         public override void Flush()

@@ -108,7 +108,13 @@ internal ref struct SshReader(ReadOnlySpan<byte> data)
 
     public ulong UInt64() => BinaryPrimitives.ReadUInt64BigEndian(Take(8));
 
-    public ReadOnlySpan<byte> String() => Take(checked((int)UInt32()));
+    public ReadOnlySpan<byte> String()
+    {
+        var length = UInt32();
+        return length <= (uint)Remaining ? Take((int)length) : throw new SshProtocolException("Message is shorter than its fields.");
+    }
+
+    public ReadOnlySpan<byte> Bytes(int count) => Take(count);
 
     public string Utf8() => Encoding.UTF8.GetString(String());
 
@@ -120,11 +126,19 @@ internal ref struct SshReader(ReadOnlySpan<byte> data)
 
     public BigInteger MPInt() => new(String(), isUnsigned: false, isBigEndian: true);
 
-    /// <summary>An mpint's magnitude without sign padding, left-padded to <paramref name="size"/> bytes.</summary>
+    /// <summary>
+    /// A positive, minimally encoded mpint's magnitude, left-padded to <paramref name="size"/> bytes.
+    /// Zero, negative and non-minimal encodings are protocol errors.
+    /// </summary>
     public byte[] UnsignedFixed(int size)
     {
         var value = String();
-        while (value.Length > 0 && value[0] == 0) value = value[1..];
+        if (value.IsEmpty || (value[0] & 0x80) != 0) throw new SshProtocolException("Expected a positive integer.");
+        if (value[0] == 0)
+        {
+            if (value.Length == 1 || (value[1] & 0x80) == 0) throw new SshProtocolException("Integer is not minimally encoded.");
+            value = value[1..];
+        }
         if (value.Length > size) throw new SshProtocolException("Integer too large for its field.");
         var result = new byte[size];
         value.CopyTo(result.AsSpan(size - value.Length));
