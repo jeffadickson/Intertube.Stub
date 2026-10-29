@@ -38,28 +38,33 @@ public sealed class Conversation : IConnectionHandler
 
     /// <summary>Read the next line and require it to match.</summary>
     public Conversation Expect(LineMatcher matcher) =>
-        Step($"expect {matcher}", async connection =>
-        {
-            var line = await connection.ReadLineAsync().ConfigureAwait(false);
-            if (line is not null && matcher.IsMatch(line)) return;
-            if (line is not null && _mismatchReply is not null) await connection.WriteLineAsync(_mismatchReply).ConfigureAwait(false);
-            throw new ConversationException(line is null
-                ? $"Expected a line matching {matcher} but the client closed the connection."
-                : $"Expected a line matching {matcher} but received \"{TranscriptBase.Escape(line)}\".");
-        });
+        Step($"expect {matcher}", c => ExpectLineAsync(c, matcher));
 
     /// <summary>Expect a line, then reply.</summary>
-    public Conversation Expect(LineMatcher matcher, string reply) => Expect(matcher).Send(reply);
+    public Conversation Expect(LineMatcher matcher, string reply) =>
+        Step($"expect {matcher} and reply \"{TranscriptBase.Escape(reply)}\"", async connection =>
+        {
+            await ExpectLineAsync(connection, matcher).ConfigureAwait(false);
+            await connection.WriteLineAsync(reply).ConfigureAwait(false);
+        });
 
     /// <summary>Expect a line, then reply with something computed from it.</summary>
     public Conversation Expect(LineMatcher matcher, Func<string, string> reply) =>
         Step($"expect {matcher} and reply", async connection =>
         {
-            var line = await connection.ReadLineAsync().ConfigureAwait(false);
-            if (line is null || !matcher.IsMatch(line))
-                throw new ConversationException($"Expected a line matching {matcher} but received {(line is null ? "end of stream" : $"\"{TranscriptBase.Escape(line)}\"")}.");
+            var line = await ExpectLineAsync(connection, matcher).ConfigureAwait(false);
             await connection.WriteLineAsync(reply(line)).ConfigureAwait(false);
         });
+
+    private async Task<string> ExpectLineAsync(Connection connection, LineMatcher matcher)
+    {
+        var line = await connection.ReadLineAsync().ConfigureAwait(false);
+        if (line is not null && matcher.IsMatch(line)) return line;
+        if (line is not null && _mismatchReply is not null) await connection.WriteLineAsync(_mismatchReply).ConfigureAwait(false);
+        throw new ConversationException(line is null
+            ? $"Expected a line matching {matcher} but the client closed the connection."
+            : $"Expected a line matching {matcher} but received \"{TranscriptBase.Escape(line)}\".");
+    }
 
     /// <summary>Read and require an exact run of bytes, such as a binary preamble.</summary>
     public Conversation ExpectBytes(ReadOnlyMemory<byte> expected) =>

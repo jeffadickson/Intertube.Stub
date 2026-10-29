@@ -57,7 +57,7 @@ public sealed record SmtpCommand(string Line, string Verb, Connection Connection
 /// Unlike a scripted <see cref="Conversation"/>, it accepts any valid dialogue, so the test is about
 /// the mail, not the client's exact command order.
 /// </summary>
-public sealed class SmtpServer : IAsyncDisposable
+public sealed partial class SmtpServer : IAsyncDisposable
 {
     private readonly ConcurrentQueue<SmtpMessage> _messages = new();
     private readonly ConcurrentQueue<ReplyRule> _rules = new();
@@ -88,7 +88,8 @@ public sealed class SmtpServer : IAsyncDisposable
     /// <summary>
     /// Called for each command before the server handles it. Return a reply line (such as
     /// <c>"421 4.3.2 Shutting down"</c>) to send it instead, or null to carry on. A 421 reply also
-    /// closes the connection, as a real server does.
+    /// closes the connection, as a real server does. An injected reply replaces the command entirely: the
+    /// session's state does not change, so an injected 250 to MAIL does not start a transaction.
     /// </summary>
     public Func<SmtpCommand, ValueTask<string?>>? Intercept { get; set; }
 
@@ -97,7 +98,10 @@ public sealed class SmtpServer : IAsyncDisposable
     /// <summary>
     /// Answer the next <paramref name="times"/> commands matching the glob <paramref name="command"/>
     /// (matched against the whole line, e.g. <c>"RCPT TO:&lt;*@blocked.test&gt;*"</c>, or <c>"."</c> for
-    /// the end of a message) with <paramref name="reply"/>.
+    /// the end of a message) with <paramref name="reply"/>. A rule matches the line as sent or its canonical
+    /// form, with the verb upper-cased and no space after <c>FROM:</c> or <c>TO:</c>, so the pattern
+    /// <c>"RCPT TO:&lt;a@b&gt;"</c> also matches <c>"rcpt to: &lt;a@b&gt;"</c>. As with <see cref="Intercept"/>,
+    /// the session's state is left unchanged.
     /// </summary>
     public void FailNext(LineMatcher command, string reply, int times = 1)
     {
@@ -123,6 +127,9 @@ public sealed class SmtpServer : IAsyncDisposable
 
     public void ThrowIfFaulted() => Tcp.ThrowIfFaulted();
 
+    /// <summary>Stop accepting and close every session; see <see cref="StreamServer.StopAsync"/>.</summary>
+    public Task StopAsync() => Tcp.StopAsync();
+
     public ValueTask DisposeAsync() => Tcp.DisposeAsync();
 
     public override string ToString() => $"smtp://{Host}:{Port}";
@@ -130,9 +137,18 @@ public sealed class SmtpServer : IAsyncDisposable
     private async ValueTask<string?> OverrideAsync(SmtpCommand command)
     {
         foreach (var rule in _rules)
-            if (rule.TryConsume(command.Line))
+            if (rule.TryConsume(command.Line, Canonical(command)))
                 return rule.Reply;
         return Intercept is { } intercept ? await intercept(command).ConfigureAwait(false) : null;
+    }
+
+    /// <summary>The command as a rule is most likely written, such as <c>MAIL FROM:&lt;a@b&gt;</c>.</summary>
+    private static string Canonical(SmtpCommand command)
+    {
+        var rest = command.Line.Length > command.Verb.Length ? command.Line[command.Verb.Length..] : "";
+        if (command.Verb is "MAIL" or "RCPT" && rest.IndexOf(':') is >= 0 and var colon)
+            rest = " " + rest[..colon].Trim().ToUpperInvariant() + ":" + rest[(colon + 1)..].TrimStart();
+        return command.Verb + rest;
     }
 
     private void Add(SmtpMessage message)
@@ -147,9 +163,9 @@ public sealed class SmtpServer : IAsyncDisposable
 
         public string Reply => reply;
 
-        public bool TryConsume(string line)
+        public bool TryConsume(string line, string canonical)
         {
-            if (!command.IsMatch(line)) return false;
+            if (!command.IsMatch(line) && !command.IsMatch(canonical)) return false;
             while (true)
             {
                 var remaining = Volatile.Read(ref _remaining);
@@ -159,237 +175,4 @@ public sealed class SmtpServer : IAsyncDisposable
         }
     }
 
-    /// <summary>The state machine for one connection (RFC 5321).</summary>
-    private sealed class Session(SmtpServer server, Connection connection)
-    {
-        private readonly SmtpServerOptions _options = server.Options;
-        private bool _greeted;
-        private string? _user;
-        private string? _from;
-        private readonly List<string> _recipients = [];
-
-        private bool AuthRequired => _options.Users is { Count: > 0 };
-
-        public async Task RunAsync()
-        {
-            await ReplyAsync($"220 {_options.Domain} ESMTP Intertube.Stub").ConfigureAwait(false);
-            while (await connection.ReadLineAsync().ConfigureAwait(false) is { } line)
-            {
-                var verb = line.Split(' ', 2)[0].ToUpperInvariant();
-                if (await server.OverrideAsync(new SmtpCommand(line, verb, connection)).ConfigureAwait(false) is { } injected)
-                {
-                    if (connection.IsTerminated) return;
-                    await ReplyAsync(injected).ConfigureAwait(false);
-                    if (injected.StartsWith("421", StringComparison.Ordinal)) return;
-                    continue;
-                }
-                if (connection.IsTerminated) return;
-                if (!await HandleAsync(line, verb).ConfigureAwait(false)) return;
-            }
-        }
-
-        /// <summary>Handle one command; false ends the session.</summary>
-        private async Task<bool> HandleAsync(string line, string verb)
-        {
-            var argument = line.Length > verb.Length ? line[(verb.Length + 1)..].Trim() : "";
-            switch (verb)
-            {
-                case "EHLO":
-                {
-                    Reset();
-                    _greeted = true;
-                    List<string> extensions = [$"SIZE {_options.MaxMessageSize}", "PIPELINING", "8BITMIME", "SMTPUTF8", "ENHANCEDSTATUSCODES"];
-                    if (_options.Tls is not null && !connection.IsTls) extensions.Add("STARTTLS");
-                    if (AuthRequired) extensions.Add("AUTH PLAIN LOGIN");
-                    await ReplyAsync([$"250-{_options.Domain} greets {argument}", .. extensions.Select((e, i) => (i == extensions.Count - 1 ? "250 " : "250-") + e)]).ConfigureAwait(false);
-                    return true;
-                }
-                case "HELO":
-                    Reset();
-                    _greeted = true;
-                    await ReplyAsync($"250 {_options.Domain}").ConfigureAwait(false);
-                    return true;
-
-                case "STARTTLS":
-                    if (_options.Tls is null || connection.IsTls)
-                    {
-                        await ReplyAsync("502 5.5.1 STARTTLS not available").ConfigureAwait(false);
-                        return true;
-                    }
-                    await ReplyAsync("220 2.0.0 Ready to start TLS").ConfigureAwait(false);
-                    await connection.UpgradeToTlsAsync(_options.Tls).ConfigureAwait(false);
-                    Reset();
-                    _greeted = false;
-                    _user = null;
-                    return true;
-
-                case "AUTH":
-                    await AuthenticateAsync(argument).ConfigureAwait(false);
-                    return true;
-
-                case "MAIL":
-                {
-                    if (!_greeted) return await ReplyTrueAsync("503 5.5.1 Say EHLO first");
-                    if (_options.RequireTls && !connection.IsTls) return await ReplyTrueAsync("530 5.7.0 Must issue a STARTTLS command first");
-                    if (AuthRequired && _user is null) return await ReplyTrueAsync("530 5.7.0 Authentication required");
-                    if (_from is not null) return await ReplyTrueAsync("503 5.5.1 Nested MAIL command");
-                    if (Address(argument, "FROM:") is not { } from) return await ReplyTrueAsync("501 5.5.4 Syntax: MAIL FROM:<address>");
-                    var size = System.Text.RegularExpressions.Regex.Match(argument, @"\bSIZE=(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    if (size.Success && long.Parse(size.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture) > _options.MaxMessageSize)
-                        return await ReplyTrueAsync("552 5.3.4 Message size exceeds fixed limit");
-                    _from = from;
-                    return await ReplyTrueAsync("250 2.1.0 OK");
-                }
-
-                case "RCPT":
-                    if (_from is null) return await ReplyTrueAsync("503 5.5.1 Need MAIL first");
-                    if (Address(argument, "TO:") is not { Length: > 0 } to) return await ReplyTrueAsync("501 5.5.4 Syntax: RCPT TO:<address>");
-                    _recipients.Add(to);
-                    return await ReplyTrueAsync("250 2.1.5 OK");
-
-                case "DATA":
-                    if (_recipients.Count == 0) return await ReplyTrueAsync("503 5.5.1 Need RCPT first");
-                    await ReplyAsync("354 End data with <CR><LF>.<CR><LF>").ConfigureAwait(false);
-                    return await ReceiveDataAsync().ConfigureAwait(false);
-
-                case "RSET":
-                    Reset();
-                    return await ReplyTrueAsync("250 2.0.0 OK");
-
-                case "NOOP":
-                    return await ReplyTrueAsync("250 2.0.0 OK");
-
-                case "VRFY":
-                    return await ReplyTrueAsync("252 2.1.5 Cannot verify, but will accept");
-
-                case "HELP":
-                    return await ReplyTrueAsync("214 2.0.0 See RFC 5321");
-
-                case "QUIT":
-                    await ReplyAsync("221 2.0.0 Bye").ConfigureAwait(false);
-                    return false;
-
-                default:
-                    return await ReplyTrueAsync("500 5.5.1 Command not recognised");
-            }
-        }
-
-        private async Task<bool> ReceiveDataAsync()
-        {
-            var data = new MemoryStream();
-            var size = 0L;
-            while (true)
-            {
-                var line = await connection.ReadUntilAsync("\n"u8.ToArray()).ConfigureAwait(false);
-                if (line is null) return false; // the client went away mid-message: nothing is delivered
-                var length = line.Length > 0 && line[^1] == '\r' ? line.Length - 1 : line.Length;
-                if (length == 1 && line[0] == '.') break;
-                var start = length > 0 && line[0] == '.' ? 1 : 0; // dot-unstuffing
-                size += length - start + 2;
-                if (size <= _options.MaxMessageSize)
-                {
-                    data.Write(line, start, length - start);
-                    data.Write("\r\n"u8);
-                }
-            }
-
-            var message = new SmtpMessage(_from!, [.. _recipients], data.ToArray(), _user, connection.IsTls, connection.Id);
-            Reset();
-            if (size > _options.MaxMessageSize) return await ReplyTrueAsync("552 5.3.4 Message size exceeds fixed limit");
-            if (await server.OverrideAsync(new SmtpCommand(".", ".", connection) { Message = message }).ConfigureAwait(false) is { } injected)
-            {
-                if (connection.IsTerminated) return false;
-                await ReplyAsync(injected).ConfigureAwait(false);
-                return !injected.StartsWith("421", StringComparison.Ordinal);
-            }
-            if (connection.IsTerminated) return false;
-            server.Add(message);
-            connection.Transcript.RecordMessage(TranscriptDirection.Received, $"MESSAGE {message}");
-            return await ReplyTrueAsync($"250 2.0.0 OK: queued as {server._messages.Count}");
-        }
-
-        private async Task AuthenticateAsync(string argument)
-        {
-            if (!AuthRequired)
-            {
-                await ReplyAsync("503 5.5.1 Authentication not enabled").ConfigureAwait(false);
-                return;
-            }
-            if (_user is not null)
-            {
-                await ReplyAsync("503 5.5.1 Already authenticated").ConfigureAwait(false);
-                return;
-            }
-            var parts = argument.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-            string? user = null, password = null;
-            switch (parts.FirstOrDefault()?.ToUpperInvariant())
-            {
-                case "PLAIN":
-                {
-                    var response = parts.Length > 1 ? parts[1] : await ChallengeAsync("").ConfigureAwait(false);
-                    if (Decode(response) is { } decoded && decoded.Split('\0') is [_, var u, var p])
-                        (user, password) = (u, p);
-                    break;
-                }
-                case "LOGIN":
-                {
-                    user = parts.Length > 1 ? Decode(parts[1]) : Decode(await ChallengeAsync("VXNlcm5hbWU6").ConfigureAwait(false));
-                    if (user is not null) password = Decode(await ChallengeAsync("UGFzc3dvcmQ6").ConfigureAwait(false));
-                    break;
-                }
-                default:
-                    await ReplyAsync("504 5.5.4 Unrecognised authentication type").ConfigureAwait(false);
-                    return;
-            }
-
-            var accepted = user is not null && password is not null && _options.Users!.TryGetValue(user, out var expected) && expected == password;
-            connection.Transcript.RecordMessage(TranscriptDirection.Received, $"AUTH {parts[0].ToUpperInvariant()} user={user} {(accepted ? "accepted" : "rejected")}");
-            if (accepted) _user = user;
-            await ReplyAsync(accepted ? "235 2.7.0 Authentication successful" : "535 5.7.8 Authentication credentials invalid").ConfigureAwait(false);
-        }
-
-        private async Task<string> ChallengeAsync(string challenge)
-        {
-            await ReplyAsync("334 " + challenge).ConfigureAwait(false);
-            return await connection.ReadLineAsync().ConfigureAwait(false) ?? "";
-        }
-
-        private static string? Decode(string base64)
-        {
-            try
-            {
-                return Encoding.UTF8.GetString(Convert.FromBase64String(base64.Trim()));
-            }
-            catch (FormatException)
-            {
-                return null;
-            }
-        }
-
-        /// <summary>The address in <c>FROM:&lt;a@b&gt; params</c>; null when malformed. The null sender <c>&lt;&gt;</c> is "".</summary>
-        private static string? Address(string argument, string prefix)
-        {
-            if (!argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
-            var rest = argument[prefix.Length..].TrimStart();
-            if (!rest.StartsWith('<')) return rest.Split(' ')[0];
-            var end = rest.IndexOf('>');
-            return end < 0 ? null : rest[1..end];
-        }
-
-        private void Reset()
-        {
-            _from = null;
-            _recipients.Clear();
-        }
-
-        private async Task<bool> ReplyTrueAsync(string line)
-        {
-            await ReplyAsync(line).ConfigureAwait(false);
-            return true;
-        }
-
-        private ValueTask ReplyAsync(string line) => connection.WriteAsync(line + "\r\n");
-
-        private ValueTask ReplyAsync(IEnumerable<string> lines) => connection.WriteAsync(string.Concat(lines.Select(l => l + "\r\n")));
-    }
 }

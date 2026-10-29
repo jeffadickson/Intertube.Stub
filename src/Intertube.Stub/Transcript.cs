@@ -256,7 +256,7 @@ public sealed class ConnectionTranscript : TranscriptBase
         if (data.IsEmpty) return;
         // Log first, so whatever a test sees in the transcript has already reached the log.
         if (_log is not null)
-            _log($"#{Id} {(direction == TranscriptDirection.Received ? "<-" : "->")} {Escape(Encoding.GetString(data))}");
+            Log($"#{Id} {(direction == TranscriptDirection.Received ? "<-" : "->")} {Escape(Encoding.GetString(data))}");
         if (_recordData) Add(new(direction, data.ToArray(), null, DateTimeOffset.UtcNow));
     }
 
@@ -273,15 +273,36 @@ public sealed class ConnectionTranscript : TranscriptBase
             RecordEvent(message);
             return;
         }
-        _log?.Invoke($"#{Id} {(direction == TranscriptDirection.Received ? "<=" : "=>")} {message}");
+        Log($"#{Id} {(direction == TranscriptDirection.Received ? "<=" : "=>")} {message}");
         Add(new(direction, [], message, DateTimeOffset.UtcNow));
     }
 
     internal void RecordEvent(string description, bool closed = false)
     {
         if (closed) IsClosed = true;
-        _log?.Invoke($"#{Id} -- {description}");
+        Log($"#{Id} -- {description}");
         Add(new(TranscriptDirection.Event, [], description, DateTimeOffset.UtcNow));
+    }
+
+    /// <summary>
+    /// Call the user's log callback, ignoring its failures: a log that throws (such as xUnit's output
+    /// helper after its test has ended) must not take down the server.
+    /// </summary>
+    private void Log(string line)
+    {
+        if (_log is not null) SafeLog(_log, line);
+    }
+
+    internal static void SafeLog(Action<string> log, string line)
+    {
+        try
+        {
+            log(line);
+        }
+        catch (Exception)
+        {
+            // Deliberately swallowed; see Log.
+        }
     }
 
     private void Add(TranscriptEntry entry)

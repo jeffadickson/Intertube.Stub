@@ -5,7 +5,7 @@ namespace Intertube.Stub;
 /// <summary>
 /// A test applied to one line of text. Strings convert implicitly and are glob patterns matching the
 /// whole line: <c>*</c> matches any run of characters and <c>?</c> exactly one. A string without
-/// wildcards is therefore an exact match.
+/// wildcards is therefore an exact match; use <see cref="Exact"/> for text that contains them.
 /// </summary>
 public sealed class LineMatcher
 {
@@ -29,6 +29,13 @@ public sealed class LineMatcher
         var options = RegexOptions.Singleline | RegexOptions.CultureInvariant | (ignoreCase ? RegexOptions.IgnoreCase : 0);
         var regex = new Regex("^" + System.Text.RegularExpressions.Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".") + "$", options);
         return new(regex.IsMatch, $"\"{pattern}\"");
+    }
+
+    /// <summary>Match the whole line literally, so <c>*</c> and <c>?</c> are ordinary characters.</summary>
+    public static LineMatcher Exact(string text, StringComparison comparison = StringComparison.Ordinal)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        return new(line => string.Equals(line, text, comparison), $"exactly \"{text}\"");
     }
 
     /// <summary>Search the line with a regular expression (anchor it yourself for a full match).</summary>

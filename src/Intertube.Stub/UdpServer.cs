@@ -165,13 +165,16 @@ public sealed class UdpServer : IAsyncDisposable
 
     public int Port => EndPoint.Port;
 
+    /// <summary>Host string for clients, such as "127.0.0.1" (loopback for a wildcard bind).</summary>
+    public string Host => (EndPoint.Address.Equals(IPAddress.Any) ? IPAddress.Loopback : EndPoint.Address.Equals(IPAddress.IPv6Any) ? IPAddress.IPv6Loopback : EndPoint.Address).ToString();
+
     public UdpTranscript Transcript { get; }
 
     public IReadOnlyList<Exception> Errors => [.. _errors];
 
     public void ThrowIfFaulted()
     {
-        if (!_errors.IsEmpty) throw new AggregateException("A Intertube.Stub handler failed.", _errors);
+        if (!_errors.IsEmpty) throw new AggregateException("An Intertube.Stub handler failed.", _errors);
     }
 
     /// <summary>Listen on 127.0.0.1. Port 0 picks a free port.</summary>
@@ -207,7 +210,7 @@ public sealed class UdpServer : IAsyncDisposable
         if (Options.ReplyDelay > TimeSpan.Zero) await Task.Delay(Options.ReplyDelay, cancellationToken).ConfigureAwait(false);
         await _socket.SendToAsync(data, SocketFlags.None, remoteEndPoint, cancellationToken).ConfigureAwait(false);
         Transcript.Add(new(TranscriptDirection.Sent, remoteEndPoint, data.ToArray(), false, DateTimeOffset.UtcNow));
-        Options.Log?.Invoke($"-> {remoteEndPoint} {TranscriptBase.Escape(Options.Encoding.GetString(data.Span))}");
+        Log($"-> {remoteEndPoint} {TranscriptBase.Escape(Options.Encoding.GetString(data.Span))}");
     }
 
     public Task StopAsync() => _stop.Value;
@@ -228,15 +231,18 @@ public sealed class UdpServer : IAsyncDisposable
                 {
                     result = await _socket.ReceiveFromAsync(buffer, SocketFlags.None, any, token).ConfigureAwait(false);
                 }
-                catch (SocketException) when (!token.IsCancellationRequested)
+                catch (SocketException ex) when (!token.IsCancellationRequested)
                 {
+                    // Windows reports a datagram over MaxDatagramSize (Unix truncates it silently); other
+                    // errors are typically an ICMP port unreachable left over from an earlier send.
+                    if (ex.SocketErrorCode == SocketError.MessageSize) Log($"<- datagram larger than MaxDatagramSize ({Options.MaxDatagramSize}) discarded");
                     continue;
                 }
 
                 var data = buffer.AsSpan(0, result.ReceivedBytes).ToArray();
                 var dropped = Options.DropRate > 0 && _random.NextDouble() < Options.DropRate;
                 Transcript.Add(new(TranscriptDirection.Received, result.RemoteEndPoint, data, dropped, DateTimeOffset.UtcNow));
-                Options.Log?.Invoke($"<- {result.RemoteEndPoint} {TranscriptBase.Escape(Options.Encoding.GetString(data))}{(dropped ? " (dropped)" : "")}");
+                Log($"<- {result.RemoteEndPoint} {TranscriptBase.Escape(Options.Encoding.GetString(data))}{(dropped ? " (dropped)" : "")}");
                 if (!dropped) await _inbox.Writer.WriteAsync(new Datagram(this, data, result.RemoteEndPoint, token), token).ConfigureAwait(false);
             }
         }
@@ -252,6 +258,7 @@ public sealed class UdpServer : IAsyncDisposable
     private Task DispatchLoopAsync() =>
         Parallel.ForEachAsync(_inbox.Reader.ReadAllAsync(), new ParallelOptions { MaxDegreeOfParallelism = Options.MaxConcurrency }, async (datagram, _) =>
         {
+            if (_stopping.IsCancellationRequested) return; // queued before the stop: drop it
             try
             {
                 await _handler(datagram).ConfigureAwait(false);
@@ -263,7 +270,7 @@ public sealed class UdpServer : IAsyncDisposable
             {
                 _errors.Enqueue(ex);
                 Transcript.Pulse();
-                Options.Log?.Invoke($"handler failed: {ex.GetType().Name}: {ex.Message}");
+                Log($"handler failed: {ex.GetType().Name}: {ex.Message}");
             }
         });
 
@@ -272,8 +279,13 @@ public sealed class UdpServer : IAsyncDisposable
         await _stopping.CancelAsync().ConfigureAwait(false);
         _socket.Dispose();
         await _receiveLoop.ConfigureAwait(false);
-        // The inbox is complete now; queued datagrams still run, but their tokens are cancelled.
+        // The inbox is complete now; datagrams still queued are skipped.
         await Task.WhenAny(_dispatchLoop, Task.Delay(Options.ShutdownTimeout)).ConfigureAwait(false);
+    }
+
+    private void Log(string line)
+    {
+        if (Options.Log is { } log) ConnectionTranscript.SafeLog(log, line);
     }
 
     public override string ToString() => $"udp://{EndPoint}";

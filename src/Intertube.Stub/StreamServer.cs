@@ -54,7 +54,7 @@ public abstract class StreamServer : IAsyncDisposable
     /// <summary>Throw an <see cref="AggregateException"/> if any handler failed.</summary>
     public void ThrowIfFaulted()
     {
-        if (!_errors.IsEmpty) throw new AggregateException("A Intertube.Stub handler failed.", _errors);
+        if (!_errors.IsEmpty) throw new AggregateException("An Intertube.Stub handler failed.", _errors);
     }
 
     /// <summary>Wait until <paramref name="count"/> handler errors have been recorded.</summary>
@@ -65,17 +65,19 @@ public abstract class StreamServer : IAsyncDisposable
     public async Task<Connection> ConnectAsync(CancellationToken cancellationToken = default)
     {
         var socket = CreateClientSocket();
+        Connection? connection = null;
         try
         {
-            await socket.ConnectAsync(_listener.LocalEndPoint!, cancellationToken).ConfigureAwait(false);
+            await socket.ConnectAsync(ClientEndPoint, cancellationToken).ConfigureAwait(false);
             var transcript = new ConnectionTranscript(0, socket.RemoteEndPoint, Options.Encoding, Options.RecordTranscript, null, new());
-            var connection = new Connection(socket, isServer: false, Options with { Faults = FaultOptions.None }, transcript, CancellationToken.None);
+            connection = new Connection(socket, isServer: false, Options with { Faults = FaultOptions.None }, transcript, CancellationToken.None);
             if (Options.Tls is { } tls) await connection.UpgradeToTlsAsync(tls, cancellationToken).ConfigureAwait(false);
             return connection;
         }
         catch
         {
-            socket.Dispose();
+            if (connection is not null) connection.Abort();
+            else socket.Dispose();
             throw;
         }
     }
@@ -93,6 +95,9 @@ public abstract class StreamServer : IAsyncDisposable
     }
 
     private protected abstract Socket CreateClientSocket();
+
+    /// <summary>Where a client connects: the listening address, with a wildcard bind mapped to loopback.</summary>
+    private protected virtual EndPoint ClientEndPoint => _listener.LocalEndPoint!;
 
     private protected virtual void OnStopped()
     {
@@ -120,18 +125,35 @@ public abstract class StreamServer : IAsyncDisposable
             }
             catch (SocketException)
             {
-                continue; // A client gave up before we accepted it.
+                // A client gave up before we accepted it, or the process is out of sockets: back off a little
+                // so a persistent error does not spin.
+                await Task.Delay(10, CancellationToken.None).ConfigureAwait(false);
+                continue;
             }
 
-            if (socket.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6) socket.NoDelay = true;
-            var id = Interlocked.Increment(ref _nextId);
-            var connection = new Connection(socket, isServer: true, Options, Transcript.Add(id, socket.RemoteEndPoint, Options), token);
-            connection.Transcript.RecordEvent($"connected from {socket.RemoteEndPoint?.ToString() ?? "(unnamed)"}");
-
-            var task = Task.Run(() => RunAsync(connection));
-            _active[id] = (connection, task);
-            _ = task.ContinueWith(_ => _active.TryRemove(id, out var _), TaskScheduler.Default);
+            try
+            {
+                Accept(socket, token);
+            }
+            catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+            {
+                // The client reset before we could set it up (macOS can fail TCP_NODELAY on such a socket).
+                socket.Dispose();
+            }
         }
+    }
+
+    private void Accept(Socket socket, CancellationToken token)
+    {
+        if (socket.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6) socket.NoDelay = true;
+        var remote = socket.RemoteEndPoint;
+        var id = Interlocked.Increment(ref _nextId);
+        var connection = new Connection(socket, isServer: true, Options, Transcript.Add(id, remote, Options), token);
+        connection.Transcript.RecordEvent($"connected from {remote?.ToString() ?? "(unnamed)"}");
+
+        var task = Task.Run(() => RunAsync(connection));
+        _active[id] = (connection, task);
+        _ = task.ContinueWith(_ => _active.TryRemove(id, out var _), TaskScheduler.Default);
     }
 
     private async Task RunAsync(Connection connection)
@@ -154,6 +176,10 @@ public abstract class StreamServer : IAsyncDisposable
         }
         catch (Exception ex) when (IsExpected(ex, connection))
         {
+        }
+        catch (TlsHandshakeException)
+        {
+            // A client that rejects the certificate or connects without TLS is the client's failure, recorded as an event.
         }
         catch (Exception ex)
         {
@@ -219,8 +245,16 @@ public sealed class TcpServer : StreamServer
     /// <summary>The bound port; useful when listening on port 0.</summary>
     public int Port => EndPoint.Port;
 
-    /// <summary>Host string for clients, such as "127.0.0.1".</summary>
-    public string Host => EndPoint.Address.ToString();
+    /// <summary>
+    /// Host string for clients, such as "127.0.0.1". For a wildcard bind (<see cref="IPAddress.Any"/> or
+    /// <see cref="IPAddress.IPv6Any"/>) it is the matching loopback address, which a client can connect to.
+    /// </summary>
+    public string Host => Loopback(EndPoint.Address).ToString();
+
+    private protected override EndPoint ClientEndPoint => new IPEndPoint(Loopback(EndPoint.Address), EndPoint.Port);
+
+    private static IPAddress Loopback(IPAddress address) =>
+        address.Equals(IPAddress.Any) ? IPAddress.Loopback : address.Equals(IPAddress.IPv6Any) ? IPAddress.IPv6Loopback : address;
 
     /// <summary>Listen on 127.0.0.1. Port 0 picks a free port.</summary>
     public static TcpServer Listen(int port, Func<Connection, Task> handler, ServerOptions? options = null) =>

@@ -14,6 +14,12 @@ namespace Intertube.Stub;
 public sealed class ConnectionTerminatedException(string message) : IOException(message);
 
 /// <summary>
+/// Thrown when a TLS handshake fails: the peer rejected the certificate, spoke plaintext or went away. A
+/// server records it as a connection event rather than a handler error, since it is the client's failure.
+/// </summary>
+public sealed class TlsHandshakeException(string message, Exception innerException) : IOException(message, innerException);
+
+/// <summary>
 /// One accepted (or, via <c>ConnectAsync</c>, client-side) stream connection with buffered line,
 /// delimiter and exact-length reads that never impose a framing of their own. All traffic is
 /// recorded in <see cref="Transcript"/>. Like <see cref="Stream"/>, a connection supports one reader
@@ -33,6 +39,8 @@ public sealed class Connection : IAsyncDisposable
     private long _bytesWritten;
     private readonly CancellationTokenSource _terminatedSource = new();
     private int _terminated;
+    private int _released;
+    private Random? _corruptRandom;
 
     internal Connection(Socket socket, bool isServer, ServerOptions options, ConnectionTranscript transcript, CancellationToken lifetime)
     {
@@ -55,7 +63,10 @@ public sealed class Connection : IAsyncDisposable
 
     public EndPoint? LocalEndPoint { get; }
 
-    /// <summary>Cancelled when the owning server shuts down. Reads observe it automatically.</summary>
+    /// <summary>
+    /// Cancelled when the owning server shuts down (it is the server-wide token, not per connection; see
+    /// <see cref="Terminated"/> for this connection ending). Reads and writes observe it automatically.
+    /// </summary>
     public CancellationToken CancellationToken { get; }
 
     /// <summary>Faults for this connection; starts as <see cref="ServerOptions.Faults"/> and can be changed at any time.</summary>
@@ -181,6 +192,7 @@ public sealed class Connection : IAsyncDisposable
 
         if (faults.WriteDelay > TimeSpan.Zero) await Task.Delay(faults.WriteDelay, token).ConfigureAwait(false);
         if (faults.TransformWrite is { } transform) data = transform(data);
+        if (faults.CorruptRate > 0) data = Corrupt(data, faults);
 
         var chunkSize = faults.FragmentSize is > 0 and var size ? size : Math.Max(data.Length, 1);
         for (var offset = 0; offset < data.Length;)
@@ -191,8 +203,16 @@ public sealed class Connection : IAsyncDisposable
 
             if (!piece.IsEmpty)
             {
-                await _tap.WriteAsync(piece, token).ConfigureAwait(false);
-                await _tap.FlushAsync(token).ConfigureAwait(false);
+                try
+                {
+                    await _tap.WriteAsync(piece, token).ConfigureAwait(false);
+                    await _tap.FlushAsync(token).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (IsPeerReset(ex))
+                {
+                    OnPeerReset();
+                    throw;
+                }
                 _bytesWritten += piece.Length;
                 offset += piece.Length;
             }
@@ -201,13 +221,23 @@ public sealed class Connection : IAsyncDisposable
             {
                 Transcript.RecordEvent($"fault: disconnect after {_bytesWritten} bytes written");
                 if (faults.DisconnectMode == DisconnectMode.Reset) Abort();
-                else await CloseAsync().ConfigureAwait(false);
+                else await CloseCoreAsync(flushOutput: false).ConfigureAwait(false); // this write may be Output's own flush
                 throw new ConnectionTerminatedException($"Fault injection disconnected the connection after {_bytesWritten} bytes.");
             }
 
             if (offset < data.Length && faults.FragmentDelay > TimeSpan.Zero)
                 await Task.Delay(faults.FragmentDelay, token).ConfigureAwait(false);
         }
+    }
+
+    private ReadOnlyMemory<byte> Corrupt(ReadOnlyMemory<byte> data, FaultOptions faults)
+    {
+        var random = _corruptRandom ??= new Random(unchecked(faults.CorruptSeed * 397 + Id));
+        var copy = data.ToArray();
+        for (var i = 0; i < copy.Length; i++)
+            if (random.NextDouble() < faults.CorruptRate)
+                copy[i] ^= (byte)(1 << random.Next(8));
+        return copy;
     }
 
     /// <summary>Write text in <see cref="ServerOptions.Encoding"/> with no terminator.</summary>
@@ -227,42 +257,63 @@ public sealed class Connection : IAsyncDisposable
     /// <summary>
     /// Switch to TLS mid-connection (STARTTLS). The server side uses <paramref name="options"/> or
     /// <see cref="ServerOptions.Tls"/>; a client connection trusts the server's certificate. No unread
-    /// input may be buffered.
+    /// input may be buffered; anything written to <see cref="Output"/> is flushed first, in plaintext.
+    /// A failed handshake throws <see cref="TlsHandshakeException"/>.
     /// </summary>
     public async Task UpgradeToTlsAsync(TlsOptions? options = null, CancellationToken cancellationToken = default)
     {
         options ??= _options.Tls ?? throw new InvalidOperationException("No TlsOptions given and none configured on the server.");
         if (IsTls) throw new InvalidOperationException("The connection is already using TLS.");
-        if (_reader.TryRead(out var pending))
-        {
-            var buffered = pending.Buffer.Length;
-            _reader.AdvanceTo(pending.Buffer.Start);
-            if (buffered > 0)
-                throw new InvalidOperationException($"Cannot start TLS with {buffered} unread bytes buffered.");
-        }
+        if (HasBufferedInput(out var buffered))
+            throw new InvalidOperationException($"Cannot start TLS with {buffered} unread bytes buffered.");
+        if (_writer is not null) await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, CancellationToken);
         var ssl = new SslStream(_transport, leaveInnerStreamOpen: false);
-        if (_isServer) await ssl.AuthenticateAsServerAsync(options.ToServerOptions(), linked.Token).ConfigureAwait(false);
-        else await ssl.AuthenticateAsClientAsync(options.ToClientOptions("localhost"), linked.Token).ConfigureAwait(false);
+        try
+        {
+            if (_isServer) await ssl.AuthenticateAsServerAsync(options.ToServerOptions(), linked.Token).ConfigureAwait(false);
+            else await ssl.AuthenticateAsClientAsync(options.ToClientOptions("localhost"), linked.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !linked.IsCancellationRequested)
+        {
+            await ssl.DisposeAsync().ConfigureAwait(false);
+            Transcript.RecordEvent($"TLS handshake failed: {ex.GetBaseException().Message}");
+            throw new TlsHandshakeException($"TLS handshake failed: {ex.GetBaseException().Message}", ex);
+        }
+        catch
+        {
+            await ssl.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
 
         await _reader.CompleteAsync().ConfigureAwait(false);
         _transport = ssl;
         (_tap, _reader) = CreateReader(ssl);
-        _writer = null;
         Transcript.RecordEvent($"TLS established ({ssl.SslProtocol})");
     }
 
     /// <summary>
     /// Read and discard input until the peer disconnects or the server stops, never replying.
     /// Simulates a server that accepts and then hangs, for client timeout tests.
+    /// <see cref="ServerOptions.ReadTimeout"/> does not apply: a hung server waits forever.
     /// </summary>
     public async Task HangAsync(CancellationToken cancellationToken = default)
     {
         Transcript.RecordEvent("hanging");
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, CancellationToken);
         while (true)
         {
-            var result = await ReadPipeAsync(cancellationToken).ConfigureAwait(false);
+            ReadResult result;
+            try
+            {
+                result = await _reader.ReadAsync(linked.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (IsPeerReset(ex))
+            {
+                OnPeerReset();
+                throw;
+            }
             _reader.AdvanceTo(result.Buffer.End);
             if (result.IsCompleted) return;
         }
@@ -272,29 +323,31 @@ public sealed class Connection : IAsyncDisposable
     /// Close gracefully: finish TLS, send FIN, then briefly drain input so unread client data does
     /// not turn the close into a reset that could discard the last response.
     /// </summary>
-    public async Task CloseAsync()
+    public Task CloseAsync() => CloseCoreAsync(flushOutput: true);
+
+    private async Task CloseCoreAsync(bool flushOutput)
     {
         if (Interlocked.Exchange(ref _terminated, 1) != 0) return;
         SignalTerminated();
         try
         {
-            if (_writer is not null) await _writer.FlushAsync().ConfigureAwait(false);
-            if (_transport is SslStream ssl) await ssl.ShutdownAsync().ConfigureAwait(false);
-            _socket.Shutdown(SocketShutdown.Send);
-            Transcript.RecordEvent("closed", closed: true);
+            // Each step is best effort, and each is bounded so Abort (or the server's stop) can still cut in.
+            using var closing = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken);
+            closing.CancelAfter(DrainTimeout);
+            if (flushOutput && _writer is not null) await BestEffort(_writer.FlushAsync(closing.Token).AsTask()).ConfigureAwait(false);
+            if (_transport is SslStream ssl) await BestEffort(ssl.ShutdownAsync().WaitAsync(closing.Token)).ConfigureAwait(false);
+            try
+            {
+                _socket.Shutdown(SocketShutdown.Send);
+            }
+            catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+            {
+            }
+            if (Volatile.Read(ref _released) == 0) Transcript.RecordEvent("closed", closed: true);
 
             using var drain = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken);
             drain.CancelAfter(DrainTimeout);
-            while (true)
-            {
-                var result = await _reader.ReadAsync(drain.Token).ConfigureAwait(false);
-                _reader.AdvanceTo(result.Buffer.End);
-                if (result.IsCompleted) break;
-            }
-        }
-        catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
-        {
-            // Best effort: the peer may already be gone.
+            await BestEffort(DrainAsync(drain.Token)).ConfigureAwait(false);
         }
         finally
         {
@@ -302,21 +355,54 @@ public sealed class Connection : IAsyncDisposable
         }
     }
 
-    /// <summary>Drop the connection immediately with a TCP reset.</summary>
+    private async Task DrainAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var result = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            _reader.AdvanceTo(result.Buffer.End);
+            if (result.IsCompleted) return;
+        }
+    }
+
+    /// <summary>Await a closing step, ignoring the ways it fails when the peer is gone or time is up.</summary>
+    private static async Task BestEffort(Task step)
+    {
+        try
+        {
+            await step.ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or ObjectDisposedException or InvalidOperationException)
+        {
+        }
+    }
+
+    /// <summary>Drop the connection immediately with a TCP reset, including one that is part way through closing.</summary>
     public void Abort()
     {
-        if (Interlocked.Exchange(ref _terminated, 1) != 0) return;
+        var closing = Interlocked.Exchange(ref _terminated, 1) != 0;
+        if (closing && Volatile.Read(ref _released) != 0) return;
         SignalTerminated();
         try
         {
             _socket.LingerState = new LingerOption(true, 0);
         }
-        catch (SocketException)
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
         {
             // Not supported on Unix domain sockets; a plain close is the closest equivalent.
         }
-        Transcript.RecordEvent("reset", closed: true);
+        if (!Transcript.IsClosed) Transcript.RecordEvent(closing ? "reset (graceful close did not finish)" : "reset", closed: true);
         Release();
+    }
+
+    /// <summary>True if input has arrived that no read has consumed yet.</summary>
+    internal bool HasBufferedInput(out long count)
+    {
+        count = 0;
+        if (!_reader.TryRead(out var pending)) return false;
+        count = pending.Buffer.Length;
+        _reader.AdvanceTo(pending.Buffer.Start);
+        return count > 0;
     }
 
     /// <summary>Same as <see cref="CloseAsync"/>.</summary>
@@ -395,8 +481,14 @@ public sealed class Connection : IAsyncDisposable
         {
             var result = await ReadPipeAsync(cancellationToken).ConfigureAwait(false);
             var buffer = result.Buffer;
+            var start = buffer.Start;
             if (TryReadTo(ref buffer, delimiter.Span, out var frame))
             {
+                if (frame.Length > _options.MaxLineLength)
+                {
+                    _reader.AdvanceTo(start, buffer.Start);
+                    throw new InvalidDataException($"No delimiter within {_options.MaxLineLength} bytes.");
+                }
                 _reader.AdvanceTo(buffer.Start);
                 return frame;
             }
@@ -435,6 +527,7 @@ public sealed class Connection : IAsyncDisposable
 
     private void Release()
     {
+        if (Interlocked.Exchange(ref _released, 1) != 0) return;
         try { _reader.Complete(); } catch (InvalidOperationException) { }
         _transport.Dispose();
         _socket.Dispose();

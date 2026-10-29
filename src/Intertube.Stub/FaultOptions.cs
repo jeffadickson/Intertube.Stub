@@ -12,7 +12,8 @@ public enum DisconnectMode
 
 /// <summary>
 /// Misbehaviour injected into a connection's reads and writes, for testing how clients cope with
-/// slow, chatty, truncated or corrupt servers. Combine helpers with <c>with</c> expressions.
+/// slow, chatty, truncated or corrupt servers. Combine helpers with <c>with</c> expressions. Under TLS,
+/// faults apply to the plaintext: byte counts are application bytes, and the handshake is not affected.
 /// </summary>
 public sealed record FaultOptions
 {
@@ -58,25 +59,20 @@ public sealed record FaultOptions
     public static FaultOptions DisconnectAfter(long bytes, DisconnectMode mode = DisconnectMode.Reset) =>
         new() { DisconnectAfterBytesWritten = bytes, DisconnectMode = mode };
 
-    /// <summary>Flip one random bit in roughly <paramref name="rate"/> of written bytes, deterministically for a given seed.</summary>
+    /// <summary>Fraction of written bytes that get one bit flipped; see <see cref="Corrupt"/>.</summary>
+    public double CorruptRate { get; init; }
+
+    /// <summary>Seed for <see cref="CorruptRate"/>.</summary>
+    public int CorruptSeed { get; init; }
+
+    /// <summary>
+    /// Flip one random bit in roughly <paramref name="rate"/> of written bytes. Each connection draws from
+    /// its own generator, seeded from <paramref name="seed"/> and the connection id, so the corruption is
+    /// the same on every run however connections interleave.
+    /// </summary>
     public static FaultOptions Corrupt(double rate, int seed = 0)
     {
         if (rate is < 0 or > 1) throw new ArgumentOutOfRangeException(nameof(rate));
-        var random = new Random(seed);
-        var gate = new object();
-        return new()
-        {
-            TransformWrite = data =>
-            {
-                var copy = data.ToArray();
-                lock (gate)
-                {
-                    for (var i = 0; i < copy.Length; i++)
-                        if (random.NextDouble() < rate)
-                            copy[i] ^= (byte)(1 << random.Next(8));
-                }
-                return copy;
-            },
-        };
+        return new() { CorruptRate = rate, CorruptSeed = seed };
     }
 }
