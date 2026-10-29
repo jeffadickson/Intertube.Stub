@@ -27,6 +27,17 @@ public class SmtpServerTests
         return lines;
     }
 
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void Start_RefusesTlsSettingsWithoutACertificate(bool implicitTls, bool requireTls)
+    {
+        var ex = Assert.Throws<ArgumentException>(() => SmtpServer.Start(new SmtpServerOptions { ImplicitTls = implicitTls, RequireTls = requireTls }));
+
+        Assert.Equal("options", ex.ParamName);
+    }
+
     [Fact]
     public async Task BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody()
     {

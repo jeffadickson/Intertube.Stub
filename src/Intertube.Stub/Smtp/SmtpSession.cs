@@ -186,10 +186,10 @@ public sealed partial class SmtpServer
                 await ReplyAsync("503 5.5.1 Authentication not enabled").ConfigureAwait(false);
                 return;
             }
-            // RFC 4954 §4: only after EHLO, not during a mail transaction, and only once.
+            // RFC 4954 §4: only after EHLO and only once. It also forbids AUTH during a mail transaction, but
+            // with users configured MAIL needs a login first, so a transaction implies "already authenticated".
             var refusal = _user is not null ? "503 5.5.1 Already authenticated"
                 : !_greeted ? "503 5.5.1 Say EHLO first"
-                : _from is not null ? "503 5.5.1 AUTH not permitted during a mail transaction"
                 : null;
             if (refusal is not null)
             {

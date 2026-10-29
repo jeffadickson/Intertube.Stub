@@ -17,10 +17,13 @@ public sealed record SmtpServerOptions
     /// <summary>Use TLS from the first byte (port 465 style) instead of STARTTLS. Requires <see cref="Tls"/>.</summary>
     public bool ImplicitTls { get; init; }
 
-    /// <summary>Refuse MAIL until the client has switched to TLS.</summary>
+    /// <summary>Refuse MAIL until the client has switched to TLS. Requires <see cref="Tls"/>.</summary>
     public bool RequireTls { get; init; }
 
-    /// <summary>Accounts for AUTH PLAIN and AUTH LOGIN, user name to password. When set, MAIL requires authentication.</summary>
+    /// <summary>
+    /// Accounts for AUTH PLAIN and AUTH LOGIN, user name to password. When it has at least one entry, AUTH
+    /// is advertised and MAIL requires authentication; when null or empty, AUTH is refused.
+    /// </summary>
     public IReadOnlyDictionary<string, string>? Users { get; init; }
 
     /// <summary>Largest message accepted, advertised as SIZE.</summary>
@@ -66,6 +69,7 @@ public sealed partial class SmtpServer : IAsyncDisposable
     private SmtpServer(SmtpServerOptions options)
     {
         if (options.ImplicitTls && options.Tls is null) throw new ArgumentException("ImplicitTls requires Tls.", nameof(options));
+        if (options.RequireTls && options.Tls is null) throw new ArgumentException("RequireTls requires Tls.", nameof(options));
         Options = options;
         var server = options.ImplicitTls ? options.Server with { Tls = options.Tls } : options.Server;
         Tcp = TcpServer.Listen(new IPEndPoint(options.Address, options.Port), connection => new Session(this, connection).RunAsync(), server);
