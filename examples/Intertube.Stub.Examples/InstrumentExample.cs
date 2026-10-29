@@ -131,13 +131,15 @@ public class InstrumentExample(ITestOutputHelper output)
             "fragment-1" => FaultOptions.Fragment(1),
             "latency-50ms" => FaultOptions.Latency(TimeSpan.FromMilliseconds(50)),
             "connect-delay-100ms" => new FaultOptions { ConnectDelay = TimeSpan.FromMilliseconds(100) },
-            "slower-than-timeout" => FaultOptions.Latency(TimeSpan.FromSeconds(2)),
+            "slower-than-timeout" => FaultOptions.Latency(TimeSpan.FromSeconds(5)),
             "disconnect-mid-reply" => FaultOptions.DisconnectAfter(10, DisconnectMode.Close),
             "reset-mid-reply" => FaultOptions.DisconnectAfter(10),
             _ => FaultOptions.None,
         };
         await using var server = TcpServer.Listen(0, Instrument(), Options(faults));
-        await using var dmm = await Multimeter.ConnectAsync(server.Host, server.Port, TimeSpan.FromMilliseconds(500));
+        // Generous next to the faults that should succeed (a busy CI machine adds hundreds of ms),
+        // and well short of the one that should time out.
+        await using var dmm = await Multimeter.ConnectAsync(server.Host, server.Port, TimeSpan.FromMilliseconds(1500));
 
         var attempt = dmm.IdentifyAsync();
         if (shouldSucceed)

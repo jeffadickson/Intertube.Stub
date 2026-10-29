@@ -213,7 +213,11 @@ public sealed class OpenSshSftpTests(ITestOutputHelper output) : IAsyncLifetime
         int exit;
         try
         {
-            (exit, _) = await _client.SftpAsync(server, "put big.bin");
+            // OpenSSH 10 sends the file in 255 KB writes, so the abort can land after the last one, with
+            // the client idle and waiting for replies. On a busy macOS machine the client was seen to
+            // ignore the server's (valid) reset in that state; a keepalive makes it send something
+            // and get reset again, rather than wait forever.
+            (exit, _) = await _client.SftpAsync(server, "put big.bin", "test", "-o", "ServerAliveInterval=1", "-o", "ServerAliveCountMax=3");
         }
         catch (TimeoutException ex)
         {
