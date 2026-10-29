@@ -264,6 +264,8 @@ public sealed class Hl7MllpExample : IAsyncDisposable
 
         await Assert.ThrowsAnyAsync<IOException>(() => sender.SendAsync(Admit("7001")));
 
-        Assert.Equal(2, sender.ConnectionsOpened);
+        // Count on the server: under load the reset can beat the client's own connect completion, so
+        // ConnectAsync fails and the sender never counts that connection as opened.
+        receiver.Transcript.AssertConnectionCount(2);
     }
 }

@@ -210,7 +210,15 @@ public sealed class OpenSshSftpTests(ITestOutputHelper output) : IAsyncLifetime
             return ValueTask.FromResult<SftpStatus?>(null);
         };
 
-        var (exit, _) = await _client.SftpAsync(server, "put big.bin");
+        int exit;
+        try
+        {
+            (exit, _) = await _client.SftpAsync(server, "put big.bin");
+        }
+        catch (TimeoutException ex)
+        {
+            throw new TimeoutException($"{ex.Message}\nServer transcript:\n{server.Tcp.Transcript}", ex);
+        }
 
         Assert.NotEqual(0, exit);
         Assert.True(files.ReadAllBytes("/big.bin").Length < 1024 * 1024);

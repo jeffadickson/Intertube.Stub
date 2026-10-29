@@ -48,7 +48,7 @@ public class FaultTests
         {
             await client.GetStream().CopyToAsync(received);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or SocketException) // Unix surfaces the reset as a raw SocketException
         {
             // Reset by peer is the point.
         }
