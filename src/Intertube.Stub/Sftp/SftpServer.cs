@@ -39,8 +39,10 @@ public enum SftpOperation
 
 /// <summary>
 /// One SFTP request. <see cref="Path"/> is normalised and absolute (for handle operations, the path
-/// the handle was opened with). <see cref="Connection"/> is the TCP connection it arrived on, so an
-/// interceptor can <see cref="Connection.Abort"/> it mid-transfer. To stall a request, delay the
+/// the handle was opened with, or empty for a handle that is not open: such a request is still recorded
+/// and offered to failure rules and <see cref="SftpServer.Intercept"/>, then fails if they let it through).
+/// <see cref="Connection"/> is the TCP connection it arrived on, so an interceptor can
+/// <see cref="Connection.Abort"/> it mid-transfer. To stall a request, delay the
 /// interceptor (for example <c>Task.Delay(Timeout.Infinite, request.Connection.CancellationToken)</c>);
 /// do not call <see cref="Connection.HangAsync"/>, which would read the raw socket out from under SSH.
 /// </summary>
@@ -103,10 +105,10 @@ public sealed record SftpServerOptions
     /// <summary>The host key. Defaults to a fresh ECDSA P-256 key per server.</summary>
     public SshKeyPair? HostKey { get; init; }
 
-    /// <summary>Ciphers offered, most preferred first. Restrict it to make clients exercise a particular one.</summary>
+    /// <summary>Ciphers offered, most preferred first. Restrict it to make clients exercise a particular one; an unsupported name makes <see cref="SftpServer.Start(SftpServerOptions?)"/> throw.</summary>
     public IReadOnlyList<string> Ciphers { get; init; } = PacketCipher.Ciphers;
 
-    /// <summary>MACs offered for the non-AEAD ciphers, most preferred first.</summary>
+    /// <summary>MACs offered for the non-AEAD ciphers, most preferred first; an unsupported name makes <see cref="SftpServer.Start(SftpServerOptions?)"/> throw.</summary>
     public IReadOnlyList<string> Macs { get; init; } = PacketCipher.Macs;
 
     /// <summary>
@@ -145,16 +147,20 @@ public sealed class SftpServer : IAsyncDisposable
 
     private SftpServer(SftpServerOptions options)
     {
+        RequireSupported(options.Ciphers, PacketCipher.Ciphers, "cipher", nameof(SftpServerOptions.Ciphers), nameof(options));
+        RequireSupported(options.Macs, PacketCipher.Macs, "MAC", nameof(SftpServerOptions.Macs), nameof(options));
         Options = options;
         FileSystem = options.FileSystem ?? new InMemorySftpFileSystem();
         _ownsHostKey = options.HostKey is null;
         HostKeyPair = options.HostKey ?? SshKeyPair.CreateEcdsa(comment: null);
-        foreach (var cipher in options.Ciphers) PacketCipher.Sizes(cipher);
         Algorithms = new SshAlgorithms(HostKeyPair, options.Ciphers, options.Macs);
         Tcp = TcpServer.Listen(new IPEndPoint(options.Address, options.Port), connection => new SshSession(this, connection).RunAsync(), options.Server);
     }
 
-    /// <summary>Start an SFTP server on an ephemeral loopback port.</summary>
+    /// <summary>
+    /// Start an SFTP server on an ephemeral loopback port. Throws <see cref="ArgumentException"/> if
+    /// <see cref="SftpServerOptions.Ciphers"/> or <see cref="SftpServerOptions.Macs"/> names an algorithm the server does not implement.
+    /// </summary>
     public static SftpServer Start(SftpServerOptions? options = null) => new(options ?? new SftpServerOptions());
 
     /// <summary>Start an SFTP server that serves <paramref name="rootDirectory"/> as <c>/</c>.</summary>
@@ -246,6 +252,14 @@ public sealed class SftpServer : IAsyncDisposable
     }
 
     public override string ToString() => $"sftp://{Host}:{Port}";
+
+    /// <summary>Refuse an algorithm the transport cannot run, rather than offer it and fail the client's handshake.</summary>
+    private static void RequireSupported(IReadOnlyList<string> names, string[] supported, string what, string option, string paramName)
+    {
+        foreach (var name in names)
+            if (!supported.Contains(name))
+                throw new ArgumentException($"Unsupported {what} \"{name}\" in SftpServerOptions.{option}. Supported: {string.Join(", ", supported)}.", paramName);
+    }
 
     internal void Record(SshAuthAttempt attempt)
     {

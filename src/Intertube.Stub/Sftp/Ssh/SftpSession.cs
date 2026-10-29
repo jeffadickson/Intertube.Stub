@@ -212,8 +212,8 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
 
             case Close:
             {
+                if (await AdmitAsync(SftpOperation.Close, HandlePath(request.HandleId), request, token).ConfigureAwait(false)) return;
                 var handle = Lookup<Handle>(request.HandleId);
-                if (await AdmitAsync(SftpOperation.Close, handle.Path, request, token).ConfigureAwait(false)) return;
                 _handles.Remove(request.HandleId!);
                 handle.Dispose();
                 await StatusAsync(id, SftpStatus.Ok, "", token).ConfigureAwait(false);
@@ -222,9 +222,9 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
 
             case Read:
             {
-                var handle = Lookup<FileHandle>(request.HandleId);
                 var length = (int)Math.Min(request.Length, MaxRead);
-                if (await AdmitAsync(SftpOperation.Read, handle.Path, request with { Length = (uint)length }, token).ConfigureAwait(false)) return;
+                if (await AdmitAsync(SftpOperation.Read, HandlePath(request.HandleId), request with { Length = (uint)length }, token).ConfigureAwait(false)) return;
+                var handle = Lookup<FileHandle>(request.HandleId);
                 if (!handle.Access.HasFlag(FileAccess.Read)) throw new SftpException(SftpStatus.PermissionDenied, "Not opened for reading.");
                 if (request.Offset >= (ulong)handle.Stream.Length)
                 {
@@ -249,8 +249,8 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
 
             case Write:
             {
+                if (await AdmitAsync(SftpOperation.Write, HandlePath(request.HandleId), request, token).ConfigureAwait(false)) return;
                 var handle = Lookup<FileHandle>(request.HandleId);
-                if (await AdmitAsync(SftpOperation.Write, handle.Path, request, token).ConfigureAwait(false)) return;
                 if (!handle.Access.HasFlag(FileAccess.Write)) throw new SftpException(SftpStatus.PermissionDenied, "Not opened for writing.");
                 if (request.Offset > long.MaxValue) throw new SftpException(SftpStatus.Failure, "Offset out of range.");
                 handle.Stream.Position = handle.Append ? handle.Stream.Length : (long)request.Offset;
@@ -269,8 +269,8 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
 
             case FStat:
             {
+                if (await AdmitAsync(SftpOperation.FStat, HandlePath(request.HandleId), request, token).ConfigureAwait(false)) return;
                 var handle = Lookup<Handle>(request.HandleId);
-                if (await AdmitAsync(SftpOperation.FStat, handle.Path, request, token).ConfigureAwait(false)) return;
                 var attributes = Files.GetAttributes(handle.Path);
                 if (handle is FileHandle file) attributes = attributes with { Size = file.Stream.Length };
                 await SendAttributesAsync(id, attributes, token).ConfigureAwait(false);
@@ -279,10 +279,11 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
 
             case SetStat or FSetStat:
             {
-                var path = request.Type == SetStat ? request.Path : Lookup<Handle>(request.HandleId).Path;
                 var operation = request.Type == SetStat ? SftpOperation.SetStat : SftpOperation.FSetStat;
-                if (await AdmitAsync(operation, path, request, token).ConfigureAwait(false)) return;
-                if (request.Type == FSetStat && request.Attributes!.Size is { } size && Lookup<Handle>(request.HandleId) is FileHandle open)
+                if (await AdmitAsync(operation, request.Type == SetStat ? request.Path : HandlePath(request.HandleId), request, token).ConfigureAwait(false)) return;
+                var handle = request.Type == FSetStat ? Lookup<Handle>(request.HandleId) : null;
+                var path = handle?.Path ?? request.Path;
+                if (handle is FileHandle open && request.Attributes!.Size is { } size)
                 {
                     open.Stream.SetLength(size);
                     Files.SetAttributes(path, request.Attributes with { Size = null });
@@ -298,6 +299,7 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
             case OpenDir:
             {
                 if (await AdmitAsync(SftpOperation.OpenDir, request.Path, request, token).ConfigureAwait(false)) return;
+                if (_handles.Count >= MaxOpenHandles) throw new SftpException(SftpStatus.Failure, "Too many open handles.");
                 if (!Files.GetAttributes(request.Path).IsDirectory) throw new SftpException(SftpStatus.Failure, "Not a directory.");
                 var entries = new Queue<SftpDirectoryEntry>(Files.ListDirectory(request.Path));
                 await SendHandleAsync(id, new DirectoryHandle(request.Path, entries), token).ConfigureAwait(false);
@@ -306,8 +308,8 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
 
             case ReadDir:
             {
+                if (await AdmitAsync(SftpOperation.ReadDir, HandlePath(request.HandleId), request, token).ConfigureAwait(false)) return;
                 var handle = Lookup<DirectoryHandle>(request.HandleId);
-                if (await AdmitAsync(SftpOperation.ReadDir, handle.Path, request, token).ConfigureAwait(false)) return;
                 if (handle.Entries.Count == 0)
                 {
                     await StatusAsync(id, SftpStatus.Eof, "End of directory.", token).ConfigureAwait(false);
@@ -389,8 +391,8 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
 
             case "fsync@openssh.com":
             {
+                if (await AdmitAsync(SftpOperation.Fsync, HandlePath(request.HandleId), request, token).ConfigureAwait(false)) return;
                 var handle = Lookup<FileHandle>(request.HandleId);
-                if (await AdmitAsync(SftpOperation.Fsync, handle.Path, request, token).ConfigureAwait(false)) return;
                 handle.Stream.Flush();
                 await StatusAsync(id, SftpStatus.Ok, "", token).ConfigureAwait(false);
                 return;
@@ -532,6 +534,12 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
     }
 
     // ---- Handles -------------------------------------------------------------------------------
+
+    /// <summary>
+    /// The path a handle was opened with, or empty if the session has no such handle. Handle requests are
+    /// recorded under this before the handle is checked, so tests can see (and fail) requests with a bad handle.
+    /// </summary>
+    private string HandlePath(string? key) => key is not null && _handles.TryGetValue(key, out var handle) ? handle.Path : "";
 
     private T Lookup<T>(string? key) where T : Handle =>
         key is not null && _handles.TryGetValue(key, out var handle) && handle is T typed
