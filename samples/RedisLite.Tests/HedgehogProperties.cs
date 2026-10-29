@@ -92,7 +92,10 @@ public class HedgehogProperties
                 }
             }
         }
-        return client.ConnectionsOpened == 1 && fake.Server.Errors.Count == 0;
+        // Throw rather than return false here, so a failure report says which invariant broke.
+        if (fake.Server.Errors.Count > 0) throw new AggregateException("FakeRedis handler failed.", fake.Server.Errors);
+        if (client.ConnectionsOpened != 1) throw new InvalidOperationException($"The client reconnected ({client.ConnectionsOpened} connections).\n{fake.Server.Transcript}");
+        return true;
     }
 
     /// <summary>
