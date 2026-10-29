@@ -314,6 +314,10 @@ public sealed class Connection : IAsyncDisposable
                 OnPeerReset();
                 throw;
             }
+            catch (InvalidOperationException) when (IsTerminated)
+            {
+                throw ClosedException();
+            }
             _reader.AdvanceTo(result.Buffer.End);
             if (result.IsCompleted) return;
         }
@@ -321,7 +325,8 @@ public sealed class Connection : IAsyncDisposable
 
     /// <summary>
     /// Close gracefully: finish TLS, send FIN, then briefly drain input so unread client data does
-    /// not turn the close into a reset that could discard the last response.
+    /// not turn the close into a reset that could discard the last response. Reads and writes after a
+    /// close or <see cref="Abort"/> fail with <see cref="ObjectDisposedException"/> or <see cref="IOException"/>.
     /// </summary>
     public Task CloseAsync() => CloseCoreAsync(flushOutput: true);
 
@@ -399,7 +404,15 @@ public sealed class Connection : IAsyncDisposable
     internal bool HasBufferedInput(out long count)
     {
         count = 0;
-        if (!_reader.TryRead(out var pending)) return false;
+        ReadResult pending;
+        try
+        {
+            if (!_reader.TryRead(out pending)) return false;
+        }
+        catch (InvalidOperationException) when (IsTerminated)
+        {
+            throw ClosedException();
+        }
         count = pending.Buffer.Length;
         _reader.AdvanceTo(pending.Buffer.Start);
         return count > 0;
@@ -473,7 +486,17 @@ public sealed class Connection : IAsyncDisposable
             OnPeerReset();
             throw;
         }
+        catch (InvalidOperationException) when (IsTerminated)
+        {
+            throw ClosedException();
+        }
     }
+
+    /// <summary>
+    /// What a read throws once this side has closed or reset the connection: the pipe has been completed,
+    /// and its own <see cref="InvalidOperationException"/> would look like a bug in the handler.
+    /// </summary>
+    private static ObjectDisposedException ClosedException() => new(nameof(Connection), "The connection has been closed.");
 
     private async ValueTask<byte[]?> ReadFrameAsync(ReadOnlyMemory<byte> delimiter, bool returnPartialAtEnd, CancellationToken cancellationToken)
     {

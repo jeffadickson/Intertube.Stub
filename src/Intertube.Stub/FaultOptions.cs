@@ -59,8 +59,19 @@ public sealed record FaultOptions
     public static FaultOptions DisconnectAfter(long bytes, DisconnectMode mode = DisconnectMode.Reset) =>
         new() { DisconnectAfterBytesWritten = bytes, DisconnectMode = mode };
 
-    /// <summary>Fraction of written bytes that get one bit flipped; see <see cref="Corrupt"/>.</summary>
-    public double CorruptRate { get; init; }
+    /// <summary>
+    /// Fraction (0 to 1) of written bytes that get one bit flipped; see <see cref="Corrupt"/>. Anything
+    /// else throws <see cref="ArgumentOutOfRangeException"/>.
+    /// </summary>
+    public double CorruptRate
+    {
+        get;
+        init
+        {
+            if (value is not (>= 0 and <= 1)) throw new ArgumentOutOfRangeException(nameof(CorruptRate), value, "CorruptRate must be between 0 and 1.");
+            field = value;
+        }
+    }
 
     /// <summary>Seed for <see cref="CorruptRate"/>.</summary>
     public int CorruptSeed { get; init; }
@@ -72,7 +83,7 @@ public sealed record FaultOptions
     /// </summary>
     public static FaultOptions Corrupt(double rate, int seed = 0)
     {
-        if (rate is < 0 or > 1) throw new ArgumentOutOfRangeException(nameof(rate));
+        if (rate is not (>= 0 and <= 1)) throw new ArgumentOutOfRangeException(nameof(rate));
         return new() { CorruptRate = rate, CorruptSeed = seed };
     }
 }

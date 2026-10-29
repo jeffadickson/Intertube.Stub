@@ -42,7 +42,15 @@ public abstract class StreamServer : IAsyncDisposable
     /// <summary>Every connection accepted so far and its traffic.</summary>
     public ServerTranscript Transcript { get; } = new();
 
-    /// <summary>Exceptions thrown by handlers, excluding disconnects and shutdown.</summary>
+    /// <summary>
+    /// Exceptions thrown by handlers. Excluded are a reset or disconnect by the peer, a
+    /// <see cref="ConnectionTerminatedException"/> from a fault, a <see cref="TlsHandshakeException"/>, and,
+    /// once this side has closed or reset the connection or the server is stopping, the I/O failures that
+    /// follow from that: <see cref="IOException"/> (including <see cref="EndOfStreamException"/>),
+    /// <see cref="SocketException"/>, <see cref="ObjectDisposedException"/> and
+    /// <see cref="OperationCanceledException"/>. Anything else, such as an assertion that fails after
+    /// <see cref="Connection.CloseAsync"/>, is reported.
+    /// </summary>
     public IReadOnlyList<Exception> Errors => [.. _errors];
 
     /// <summary>Number of connections whose handler is still running.</summary>
@@ -194,10 +202,16 @@ public abstract class StreamServer : IAsyncDisposable
     }
 
     private bool IsExpected(Exception ex, Connection connection) =>
-        _stopping.IsCancellationRequested
-        || ex is ConnectionTerminatedException
-        || connection.IsTerminated
-        || Connection.IsPeerReset(ex);
+        ex is ConnectionTerminatedException
+        || Connection.IsPeerReset(ex)
+        || ((connection.IsTerminated || _stopping.IsCancellationRequested) && IsDisconnectConsequence(ex));
+
+    /// <summary>
+    /// How I/O fails once the connection has gone away (closed or reset here, or cut by the stop). A failed
+    /// assertion or a bug in the handler is none of these and is still reported.
+    /// </summary>
+    private static bool IsDisconnectConsequence(Exception ex) =>
+        ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException;
 
     private async Task StopCoreAsync()
     {

@@ -115,6 +115,20 @@ public class FaultTests
     }
 
     [Fact]
+    public void CorruptRate_IsValidatedHoweverItIsSet()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>("rate", () => FaultOptions.Corrupt(1.5));
+        Assert.Throws<ArgumentOutOfRangeException>("rate", () => FaultOptions.Corrupt(double.NaN));
+        Assert.Throws<ArgumentOutOfRangeException>("CorruptRate", () => new FaultOptions { CorruptRate = -0.1 });
+        Assert.Throws<ArgumentOutOfRangeException>("CorruptRate", () => FaultOptions.None with { CorruptRate = 2 });
+        Assert.Throws<ArgumentOutOfRangeException>("CorruptRate", () => FaultOptions.Corrupt(0.5) with { CorruptRate = double.NaN });
+
+        Assert.Equal(0.5, FaultOptions.Corrupt(0.5).CorruptRate);
+        Assert.Equal(1, (FaultOptions.None with { CorruptRate = 1 }).CorruptRate);
+        Assert.Equal(0, new FaultOptions { CorruptRate = 0 }.CorruptRate);
+    }
+
+    [Fact]
     public async Task ConnectDelay_HoldsTheGreeting()
     {
         await using var server = TcpServer.Listen(0, Handler.Send("220 hi\r\n"),

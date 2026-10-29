@@ -194,10 +194,7 @@ STATEMENT: >>>
 Creating a stream server with ``MaxConcurrency`` less than 1 shall throw ``ArgumentOutOfRangeException``.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/StreamServer.cs (StreamServer constructor)
-<<<
-COMMENT: >>>
-No automated test.
+- TcpServerTests.MaxConcurrencyBelowOne_Throws
 <<<
 
 [REQUIREMENT]
@@ -242,16 +239,20 @@ UID: ITS-SRV-011
 STATUS: Active
 TITLE: Expected endings are not errors
 STATEMENT: >>>
-The following shall not be added to ``Errors``: a reset or disconnect by the peer, a ``ConnectionTerminatedException`` from a fault, any exception after this side has closed or reset the connection, any exception once the server is stopping, and a ``TlsHandshakeException``.
+The following shall not be added to ``Errors``: a reset or disconnect by the peer, a ``ConnectionTerminatedException`` from a fault, a ``TlsHandshakeException``, and, once this side has closed or reset the connection or the server is stopping, an ``IOException`` (including ``EndOfStreamException``), ``SocketException``, ``ObjectDisposedException`` or ``OperationCanceledException``. Any other exception, such as a failed assertion or a handler bug after ``CloseAsync``, ``Abort`` or during the stop, shall still be added.
 <<<
 RATIONALE: >>>
-These are what a fault-injection test sets out to cause; reporting them as failures would make ``ThrowIfFaulted`` useless.
+These are what a fault-injection test sets out to cause; reporting them as failures would make ``ThrowIfFaulted`` useless. Ignoring every exception after a close or during the stop would hide real handler failures, so only the ways I/O fails on a connection that has gone away are excluded.
 <<<
 VERIFIED_BY: >>>
 - TcpServerTests.ClientReset_IsRecordedButNotAnError
 - FaultTests.DisconnectAfter_ResetsMidMessage
 - FaultTests.FaultsCanChangePerConnection
 - RobustnessTests.FailedTlsHandshake_IsAnEvent_NotAHandlerError
+- RobustnessTests.IoAfterThisSideEndedTheConnection_IsNotReported
+- RobustnessTests.AFailedAssertionAfterClose_IsReported
+- RobustnessTests.ABugAfterAbort_IsReported
+- RobustnessTests.AFailedAssertionDuringShutdown_IsReported
 <<<
 
 [REQUIREMENT]
@@ -672,6 +673,20 @@ VERIFIED_BY: >>>
 - ConfigClientTests.a reset on the first connection is retried
 <<<
 
+[REQUIREMENT]
+UID: ITS-CONN-022
+STATUS: Active
+TITLE: I/O after this side ended the connection
+STATEMENT: >>>
+Once this side has closed or reset the connection, the read and write helpers and ``HangAsync`` shall fail with ``ObjectDisposedException`` or ``IOException``, never with the ``InvalidOperationException`` of the completed input pipe, so that the server can tell these failures from handler bugs (see ITS-SRV-011).
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.IoAfterThisSideEndedTheConnection_IsNotReported
+<<<
+RELATIONS:
+- TYPE: Parent
+  VALUE: ITS-SRV-011
+
 [[/SECTION]]
 
 [[SECTION]]
@@ -786,10 +801,10 @@ STATEMENT: >>>
 ``UpgradeToTlsAsync`` shall throw ``InvalidOperationException`` when no options are given and none are configured, when the connection already uses TLS, or when unread input is buffered (bytes a client pipelined after STARTTLS must not be read as plaintext).
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Connection.cs (UpgradeToTlsAsync)
+- ProtocolTests.UpgradeToTls_ChecksItsPreconditions
 <<<
 COMMENT: >>>
-No automated test. The SMTP server checks for pipelined input itself before calling the upgrade (see ITS-CONN-020).
+The SMTP server checks for pipelined input itself before calling the upgrade (see ITS-CONN-020).
 <<<
 
 [REQUIREMENT]
@@ -1011,10 +1026,7 @@ STATEMENT: >>>
 ``LineMatcher.Exact(text, comparison)`` shall match only a line equal to ``text`` under ``comparison`` (ordinal by default), treating ``*`` and ``?`` as ordinary characters.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/LineMatcher.cs (Exact)
-<<<
-COMMENT: >>>
-No automated test.
+- ProtocolTests.LineMatcher_ExactTreatsWildcardsAsText
 <<<
 
 [REQUIREMENT]
@@ -1025,10 +1037,7 @@ STATEMENT: >>>
 ``LineMatcher.Where(predicate, description)`` shall match lines for which the predicate returns true, and ``LineMatcher.Any`` shall match every line.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/LineMatcher.cs (Where, Any)
-<<<
-COMMENT: >>>
-No automated test.
+- ProtocolTests.LineMatcher_WhereAndAny
 <<<
 
 [REQUIREMENT]
@@ -1343,10 +1352,11 @@ UID: ITS-FAULT-011
 STATUS: Active
 TITLE: Corruption
 STATEMENT: >>>
-``FaultOptions.Corrupt(rate, seed)`` shall flip one random bit in roughly ``rate`` of written bytes, preserving the length. A rate outside 0 to 1 shall throw ``ArgumentOutOfRangeException``.
+``FaultOptions.Corrupt(rate, seed)`` shall flip one random bit in roughly ``rate`` of written bytes, preserving the length. A rate outside 0 to 1 (or NaN) shall throw ``ArgumentOutOfRangeException``, whether it is passed to ``Corrupt`` or set on ``CorruptRate`` directly (object initializer or ``with``).
 <<<
 VERIFIED_BY: >>>
 - FaultTests.Corrupt_IsDeterministicForASeed
+- FaultTests.CorruptRate_IsValidatedHoweverItIsSet
 - HedgehogProperties.Client_SurvivesCorruptReplies
 <<<
 
@@ -1636,10 +1646,7 @@ STATEMENT: >>>
 ``UdpServer.Host`` shall map a wildcard bind to the matching loopback address, as ``TcpServer.Host`` does.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/UdpServer.cs (Host)
-<<<
-COMMENT: >>>
-No automated test.
+- UdpServerTests.WildcardBind_HostIsLoopback
 <<<
 
 [REQUIREMENT]
@@ -1724,13 +1731,13 @@ UID: ITS-UDP-009
 STATUS: Active
 TITLE: Oversized datagrams
 STATEMENT: >>>
-The receive buffer shall be ``MaxDatagramSize`` bytes (default 65,527). Where the OS reports a larger datagram as an error (Windows) it shall be discarded and logged as "datagram larger than MaxDatagramSize"; where the OS truncates it silently (Unix) the truncated datagram shall be delivered.
+A datagram larger than ``MaxDatagramSize`` (default 65,527) shall be discarded on every OS, whether the OS reports it as an error (Windows) or truncates it silently (Unix): it shall not reach the handler or the transcript, and shall be logged as "datagram larger than MaxDatagramSize (n) discarded". A datagram of exactly ``MaxDatagramSize`` bytes shall be delivered whole.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/UdpServer.cs (ReceiveLoopAsync)
+- UdpServerTests.OversizedDatagrams_AreDiscardedOnEveryOs
 <<<
 COMMENT: >>>
-No automated test.
+The receive buffer is one byte larger than ``MaxDatagramSize``, so a datagram over the limit is either received at that size (Unix truncation) or fails the receive (Windows); both are discarded.
 <<<
 
 [REQUIREMENT]
@@ -1738,13 +1745,13 @@ UID: ITS-UDP-010
 STATUS: Active
 TITLE: Receive loop survives ICMP errors
 STATEMENT: >>>
-An ICMP "port unreachable" caused by replying to a vanished client shall not stop the receive loop (on Windows ``SIO_UDP_CONNRESET`` shall be disabled; other receive errors shall be skipped).
+An ICMP "port unreachable" caused by replying to a vanished client shall not stop the receive loop (on Windows ``SIO_UDP_CONNRESET`` shall be disabled, and a connection-reset receive error shall be skipped).
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/UdpServer.cs (Listen, ReceiveLoopAsync)
+- UdpServerTests.ReplyToAVanishedClient_DoesNotStopTheReceiveLoop
 <<<
 COMMENT: >>>
-No automated test.
+The ICMP error arrives asynchronously, so the test shows that the loop keeps serving after such a reply but cannot prove the error had arrived first.
 <<<
 
 [REQUIREMENT]
@@ -1760,5 +1767,22 @@ VERIFIED_BY: >>>
 COMMENT: >>>
 No automated test.
 <<<
+
+[REQUIREMENT]
+UID: ITS-UDP-012
+STATUS: Active
+TITLE: Receive loop backs off on persistent errors
+STATEMENT: >>>
+A receive error that does not concern a single datagram (anything but an oversized datagram or a connection reset from an ICMP error) shall not stop the receive loop, and the loop shall wait briefly (about 10 milliseconds) before receiving again, so that a persistent error does not spin a processor core.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/UdpServer.cs (ReceiveLoopAsync)
+<<<
+COMMENT: >>>
+No automated test: a persistent socket error cannot be provoked portably from a test.
+<<<
+RELATIONS:
+- TYPE: Parent
+  VALUE: ITS-UDP-010
 
 [[/SECTION]]

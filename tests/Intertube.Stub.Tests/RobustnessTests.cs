@@ -166,6 +166,108 @@ public class RobustnessTests
         Assert.Equal(2, peak);
     }
 
+    [Fact]
+    public async Task AFailedAssertionAfterClose_IsReported()
+    {
+        await using var server = TcpServer.Listen(0, async connection =>
+        {
+            await connection.WriteLineAsync("bye");
+            await connection.CloseAsync();
+            throw new TranscriptAssertionException("checked after the close");
+        });
+        await using (var client = await server.ConnectAsync())
+            Assert.Equal("bye\r\n", Encoding.ASCII.GetString(await client.ReadToEndAsync()));
+
+        await server.WaitForErrorsAsync();
+        Assert.Equal("checked after the close", Assert.IsType<TranscriptAssertionException>(Assert.Single(server.Errors)).Message);
+    }
+
+    [Fact]
+    public async Task ABugAfterAbort_IsReported()
+    {
+        await using var server = TcpServer.Listen(0, connection =>
+        {
+            connection.Abort();
+            throw new InvalidOperationException("handler bug");
+        });
+        using var client = new TcpClient();
+        await Record.ExceptionAsync(() => client.ConnectAsync(IPAddress.Loopback, server.Port)); // a reset may beat the connect on Linux and macOS
+
+        await server.WaitForErrorsAsync();
+        Assert.Equal("handler bug", Assert.IsType<InvalidOperationException>(Assert.Single(server.Errors)).Message);
+    }
+
+    [Fact]
+    public async Task AFailedAssertionDuringShutdown_IsReported()
+    {
+        var server = TcpServer.Listen(0, async connection =>
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => connection.HangAsync()); // until the stop
+            throw new TranscriptAssertionException("checked during the stop");
+        });
+        await using var client = await server.ConnectAsync();
+        await server.Transcript.WaitForConnectionsAsync(1);
+
+        await server.DisposeAsync();
+
+        await server.WaitForErrorsAsync();
+        Assert.IsType<TranscriptAssertionException>(Assert.Single(server.Errors));
+    }
+
+    [Theory]
+    [InlineData(true, "write")]
+    [InlineData(true, "read")]
+    [InlineData(false, "write")]
+    [InlineData(false, "read")]
+    public async Task IoAfterThisSideEndedTheConnection_IsNotReported(bool abort, string operation)
+    {
+        Exception? thrown = null;
+        var errors = await ErrorsAfterAsync(async connection =>
+        {
+            if (abort) connection.Abort();
+            else await connection.CloseAsync();
+            try
+            {
+                if (operation == "write") await connection.WriteLineAsync("too late");
+                else await connection.ReadLineAsync();
+            }
+            catch (Exception ex)
+            {
+                thrown = ex;
+                throw;
+            }
+        });
+
+        Assert.True(thrown is IOException or ObjectDisposedException, $"unexpected {thrown?.ToString() ?? "success"}");
+        Assert.Equal("sentinel", Assert.Single(errors).Message);
+    }
+
+    /// <summary>
+    /// Run <paramref name="handler"/> for one connection, then a handler that fails on purpose for a second.
+    /// Handlers run one at a time, so once the sentinel failure is in, the first handler's outcome is too.
+    /// </summary>
+    private static async Task<IReadOnlyList<Exception>> ErrorsAfterAsync(Func<Connection, Task> handler)
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = TcpServer.Listen(0, connection =>
+        {
+            if (connection.Id != 1) throw new InvalidDataException("sentinel");
+            started.SetResult();
+            return handler(connection);
+        }, ServerOptions.Sequential);
+
+        using (var first = new TcpClient())
+        {
+            await Record.ExceptionAsync(() => first.ConnectAsync(IPAddress.Loopback, server.Port)); // the handler may reset it first
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        using var second = new TcpClient();
+        await second.ConnectAsync(IPAddress.Loopback, server.Port);
+
+        await server.WaitForErrorsAsync();
+        return server.Errors;
+    }
+
     private static void InterlockedMax(ref int target, int value)
     {
         int current;
