@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/examples/">
     <Project Path="examples/Intertube.Stub.Examples/Intertube.Stub.Examples.csproj" />
+    <Project Path="examples/Intertube.Stub.FSharp/Intertube.Stub.FSharp.fsproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/RedisLite.Cli/RedisLite.Cli.csproj" />

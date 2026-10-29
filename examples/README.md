@@ -20,6 +20,14 @@ SmtpClient, MailKit, FluentFTP, SSH.NET, TcpClient, UdpClient, SslStream) and kn
 | [DnsExample](Intertube.Stub.Examples/DnsExample.cs) | authoritative name server | UDP and TCP on the same port, truncation (TC) forcing a TCP retry, CNAME chains, NXDOMAIN, packet loss, SERVFAIL and a silent primary failing over to a secondary, a spoofed reply with the wrong ID ignored |
 | [ProxyExample](Intertube.Stub.Examples/ProxyExample.cs) | SOCKS5 and HTTP CONNECT proxies for `HttpClient` | a relaying fake proxy, username/password auth and 407 challenges, refused and unreachable destinations, a tunnel cut mid-response, the proxy's view of each CONNECT as transcript messages |
 
+## F#
+
+[Intertube.Stub.FSharp](Intertube.Stub.FSharp) uses the library from F#: a config-service client written with
+`task { }` and tested with a `LineResponder` rule table, a `Conversation` script, a reset on the
+first connection, a hung service, a reply cut mid-line (which caught a real bug: `StreamReader`
+hands back a partial line at end of stream), the ready-made `SmtpServer`, and an FsCheck property
+that round-trips random values through a working fake.
+
 For a complete application tested this way, with FsCheck, Hedgehog and Stryker, see [`samples/`](../samples/README.md).
 
 ```

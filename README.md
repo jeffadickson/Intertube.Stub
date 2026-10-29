@@ -190,6 +190,7 @@ hand `mail.Data` to MimeKit.
 
 - `src/Intertube.Stub` contains the library (net8.0 and net10.0)
 - `tests/Intertube.Stub.Tests` contains the xUnit tests
+- `examples/Intertube.Stub.FSharp` shows the same from F#, with `task { }` and an FsCheck property
 - `examples/` contains realistic systems under test (HttpClient, SmtpClient, MailKit SMTP and IMAP, FluentFTP, SSH.NET SFTP, HL7 MLLP, DNS, SOCKS5/HTTP proxies, Docker over a Unix socket, syslog/StatsD, SCPI, TLS pinning, binary RPC, memcached), each mocked with Intertube.Stub; see [examples/README.md](examples/README.md)
 - `samples/` contains RedisLite, a complete Redis client and CLI tested with Intertube.Stub, FsCheck, Hedgehog and Stryker; see [samples/README.md](samples/README.md)
 
