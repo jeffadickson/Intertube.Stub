@@ -15,7 +15,11 @@ public static class Handler
     /// <summary>Accept, then never reply. For client timeout tests.</summary>
     public static Func<Connection, Task> Hang { get; } = connection => connection.HangAsync();
 
-    /// <summary>Accept, then reset the connection at once.</summary>
+    /// <summary>
+    /// Accept, then reset the connection at once. Windows clients see the reset on their first read or
+    /// write; on Linux and macOS it can arrive before the client's connect completes, so the connect
+    /// itself fails with "connection reset". Tests should accept either.
+    /// </summary>
     public static Func<Connection, Task> Reset { get; } = connection =>
     {
         connection.Abort();

@@ -50,7 +50,11 @@ public sealed record FaultOptions
     public static FaultOptions Fragment(int size, TimeSpan delay = default) =>
         new() { FragmentSize = size, FragmentDelay = delay };
 
-    /// <summary>Cut the connection after <paramref name="bytes"/> bytes have been written.</summary>
+    /// <summary>
+    /// Cut the connection after <paramref name="bytes"/> bytes have been written. With
+    /// <see cref="DisconnectMode.Reset"/> and a server that writes first, a Linux or macOS client
+    /// can see the reset as a failed connect, and any OS may discard bytes the client had not yet read.
+    /// </summary>
     public static FaultOptions DisconnectAfter(long bytes, DisconnectMode mode = DisconnectMode.Reset) =>
         new() { DisconnectAfterBytesWritten = bytes, DisconnectMode = mode };
 

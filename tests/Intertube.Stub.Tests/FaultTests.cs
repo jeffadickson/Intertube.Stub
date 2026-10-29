@@ -42,10 +42,11 @@ public class FaultTests
         }, new ServerOptions { Faults = FaultOptions.DisconnectAfter(15) });
 
         using var client = new TcpClient();
-        await client.ConnectAsync(server.Host, server.Port);
         var received = new MemoryStream();
         try
         {
+            // On Linux and macOS a reset that arrives this early can fail the connect itself.
+            await client.ConnectAsync(server.Host, server.Port);
             await client.GetStream().CopyToAsync(received);
         }
         catch (Exception ex) when (ex is IOException or SocketException) // Unix surfaces the reset as a raw SocketException
@@ -135,8 +136,14 @@ public class FaultTests
     public async Task Reset_RefusesService()
     {
         await using var server = TcpServer.Listen(0, Handler.Reset);
-        await using var client = await server.ConnectAsync();
 
-        await Assert.ThrowsAnyAsync<IOException>(async () => await client.ReadLineAsync());
+        // Windows reports the reset on the first read; Linux and macOS may already fail the connect.
+        var ex = await Record.ExceptionAsync(async () =>
+        {
+            await using var client = await server.ConnectAsync();
+            await client.ReadLineAsync();
+        });
+
+        Assert.True(ex is IOException or SocketException, $"expected a reset, got {ex?.ToString() ?? "no exception"}");
     }
 }
