@@ -256,7 +256,8 @@ public sealed class ProxyExample : IAsyncDisposable
 
         await Assert.ThrowsAsync<HttpRequestException>(() => new ProxiedStatusClient(Api, proxy.Uri).GetStatusAsync());
 
-        proxy.Server.Transcript.AssertSentMessage("FAILED 2");
+        // The client can see the refusal before the proxy records it, so wait rather than assert.
+        await proxy.Server.Transcript.WaitForSentMessageAsync("FAILED 2");
         _api.Transcript.AssertConnectionCount(0);
     }
 

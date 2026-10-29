@@ -55,7 +55,10 @@ public class HedgehogProperties
     private static async Task<bool> AgreesWithModel(List<Op> ops, int fragment)
     {
         await using var fake = FakeRedis.Start(new ServerOptions { Faults = FaultOptions.Fragment(fragment) });
-        await using var client = new RedisClient(fake.ClientOptions);
+        // A generous timeout: this property is about agreement, not timing. Hedgehog runs it synchronously,
+        // so on a loaded CI runner thread-pool starvation can delay a reply that was already sent past the
+        // usual 3 s, and the timeout would then (correctly) reconnect and resend.
+        await using var client = new RedisClient(fake.ClientOptions with { CommandTimeout = TimeSpan.FromSeconds(30) });
         var model = new Dictionary<string, string>();
 
         foreach (var op in ops)
