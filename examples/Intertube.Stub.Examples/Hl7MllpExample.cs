@@ -262,10 +262,12 @@ public sealed class Hl7MllpExample : IAsyncDisposable
         await using var receiver = TcpServer.Listen(0, Handler.Reset);
         await using var sender = new MllpSender(receiver.Host, receiver.Port, TimeSpan.FromSeconds(5), maxAttempts: 2);
 
-        await Assert.ThrowsAnyAsync<IOException>(() => sender.SendAsync(Admit("7001")));
+        // On Linux and macOS the reset can arrive before the client's connect completes, and then the last
+        // attempt fails with a raw SocketException rather than an IOException from the stream.
+        var error = await Record.ExceptionAsync(() => sender.SendAsync(Admit("7001")));
+        Assert.True(error is IOException or SocketException, $"unexpected {error}");
 
-        // Count on the server: under load the reset can beat the client's own connect completion, so
-        // ConnectAsync fails and the sender never counts that connection as opened.
+        // Count on the server: for the same reason the sender may never count a connection as opened.
         receiver.Transcript.AssertConnectionCount(2);
     }
 }
