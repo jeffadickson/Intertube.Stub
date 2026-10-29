@@ -149,9 +149,10 @@ public class TcpServerTests
         await using var client = await server.ConnectAsync();
         await server.Transcript.WaitForConnectionsAsync(1);
 
-        var started = DateTime.UtcNow;
+        // Hang honours the stop, so this finishes well within ShutdownTimeout (no forced reset needed).
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         await server.DisposeAsync();
-        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(1.5));
+        Assert.True(watch.Elapsed < server.Options.ShutdownTimeout, $"took {watch.Elapsed}");
         Assert.Empty(server.Errors);
 
         // The client sees the connection go away.

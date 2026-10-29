@@ -180,7 +180,7 @@ public sealed class SftpServer : IAsyncDisposable
 
     /// <summary>
     /// Called before each SFTP request is carried out. Return a status to send it instead of doing the
-    /// work, or null to proceed. It can also delay, or abort or hang <see cref="SftpRequest.Connection"/>.
+    /// work, or null to proceed. It can also delay (awaiting <see cref="Connection.CancellationToken"/>) or abort <see cref="SftpRequest.Connection"/>; to stall, delay rather than call <see cref="Connection.HangAsync"/>.
     /// </summary>
     public Func<SftpRequest, ValueTask<SftpStatus?>>? Intercept { get; set; }
 

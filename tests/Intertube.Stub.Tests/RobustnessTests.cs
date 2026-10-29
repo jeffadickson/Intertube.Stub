@@ -126,4 +126,51 @@ public class RobustnessTests
         Assert.Equal("500 what?", await client.ReadLineAsync());
         await server.WaitForErrorsAsync();
     }
+
+    [Fact]
+    public async Task Stop_ResetsAHandlerThatIgnoresCancellation_AfterShutdownTimeout()
+    {
+        var server = TcpServer.Listen(0, _ => Task.Delay(Timeout.Infinite, CancellationToken.None),
+            new ServerOptions { ShutdownTimeout = TimeSpan.FromMilliseconds(200) });
+        await using var client = await server.ConnectAsync();
+        await server.Transcript.WaitForConnectionsAsync(1);
+
+        await server.DisposeAsync();
+
+        Assert.Contains("reset", server.Transcript[0].Events);
+        var read = await Record.ExceptionAsync(async () => Assert.Null(await client.ReadLineAsync()));
+        Assert.True(read is null or IOException or SocketException, $"unexpected {read}");
+    }
+
+    [Fact]
+    public async Task MaxConcurrency_LimitsHandlersRunningAtOnce()
+    {
+        var running = 0;
+        var peak = 0;
+        await using var server = TcpServer.Listen(0, async connection =>
+        {
+            var now = Interlocked.Increment(ref running);
+            InterlockedMax(ref peak, now);
+            await Task.Delay(100);
+            Interlocked.Decrement(ref running);
+            await connection.WriteLineAsync("done");
+        }, new ServerOptions { MaxConcurrency = 2 });
+
+        var clients = await Task.WhenAll(Enumerable.Range(0, 5).Select(_ => server.ConnectAsync()));
+        foreach (var client in clients)
+        {
+            Assert.Equal("done", await client.ReadLineAsync());
+            await client.DisposeAsync();
+        }
+
+        Assert.Equal(2, peak);
+    }
+
+    private static void InterlockedMax(ref int target, int value)
+    {
+        int current;
+        while ((current = Volatile.Read(ref target)) < value && Interlocked.CompareExchange(ref target, value, current) != current)
+        {
+        }
+    }
 }

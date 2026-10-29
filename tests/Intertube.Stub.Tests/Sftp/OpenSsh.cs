@@ -3,12 +3,12 @@ using Intertube.Stub.Sftp;
 
 namespace Intertube.Stub.Tests.Sftp;
 
-/// <summary>Skips the test when OpenSSH's <c>sftp</c> and <c>ssh-keygen</c> are not on the PATH.</summary>
+/// <summary>Skips the test (except on CI, where it fails) when OpenSSH's <c>sftp</c> and <c>ssh-keygen</c> are not on the PATH.</summary>
 public sealed class OpenSshFactAttribute : FactAttribute
 {
     public OpenSshFactAttribute()
     {
-        if (OpenSsh.Directory is null) Skip = "OpenSSH (sftp and ssh-keygen) is not on the PATH.";
+        if (OpenSsh.Directory is null && !OpenSsh.RequiredInCi) Skip = "OpenSSH (sftp and ssh-keygen) is not on the PATH.";
     }
 }
 
@@ -17,16 +17,19 @@ public sealed class OpenSshTheoryAttribute : TheoryAttribute
 {
     public OpenSshTheoryAttribute()
     {
-        if (OpenSsh.Directory is null) Skip = "OpenSSH (sftp and ssh-keygen) is not on the PATH.";
+        if (OpenSsh.Directory is null && !OpenSsh.RequiredInCi) Skip = "OpenSSH (sftp and ssh-keygen) is not on the PATH.";
     }
 }
 
 /// <summary>
 /// Drives the real OpenSSH <c>sftp</c> client in batch mode against a server, from a scratch
-/// directory holding an ed25519 identity made by <c>ssh-keygen</c>, the way CodeCourier does.
+/// directory holding an ed25519 identity made by <c>ssh-keygen</c>, as a deployment script would.
 /// </summary>
 public sealed class OpenSsh : IDisposable
 {
+    /// <summary>On CI the interop tests must run: a runner image without OpenSSH fails them instead of skipping.</summary>
+    internal static bool RequiredInCi => Environment.GetEnvironmentVariable("CI") is "true" or "True";
+
     private static readonly string Exe = OperatingSystem.IsWindows() ? ".exe" : "";
 
     public static string? Directory { get; } = (Environment.GetEnvironmentVariable("PATH") ?? "")

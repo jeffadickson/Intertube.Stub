@@ -5,7 +5,7 @@ using Xunit.Abstractions;
 namespace Intertube.Stub.Tests.Sftp;
 
 /// <summary>
-/// The server against the real OpenSSH client. These are the scenarios of CodeCourier's paramiko
+/// The server against the real OpenSSH client. These cover what a typical paramiko
 /// fixture (ed25519 key login, pinned host key, a write that fails once, wrong user, wrong host key)
 /// plus what paramiko could not easily do: every cipher and key exchange, forced rekeying, and
 /// faults below and inside the SFTP layer.
@@ -157,7 +157,7 @@ public sealed class OpenSshSftpTests(ITestOutputHelper output) : IAsyncLifetime
     }
 
     [OpenSshFact]
-    public async Task DirectoryFileSystem_UploadThenAtomicRename_LikeCodeCourier()
+    public async Task DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob()
     {
         var root = _client.PathOf("remote");
         Directory.CreateDirectory(Path.Combine(root, "outgoing"));
@@ -233,16 +233,25 @@ public sealed class OpenSshSftpTests(ITestOutputHelper output) : IAsyncLifetime
     public async Task SlowServer_InterceptCanDelayRequests()
     {
         await using var server = Start(new InMemorySftpFileSystem().AddFile("/a.txt", "a"));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        TimeSpan? openArrived = null, readArrived = null;
         server.Intercept = async request =>
         {
-            if (request.Operation == SftpOperation.Open) await Task.Delay(300);
+            if (request.Operation == SftpOperation.Open)
+            {
+                openArrived ??= clock.Elapsed;
+                await Task.Delay(300);
+            }
+            if (request.Operation == SftpOperation.Read) readArrived ??= clock.Elapsed;
             return null;
         };
 
-        var started = DateTime.UtcNow;
         await SucceedAsync(server, "get a.txt");
 
-        Assert.True(DateTime.UtcNow - started >= TimeSpan.FromMilliseconds(300));
+        // The client cannot read before the delayed OPEN reply, so the gap is the injected delay.
+        Assert.NotNull(openArrived);
+        Assert.NotNull(readArrived);
+        Assert.True(readArrived - openArrived >= TimeSpan.FromMilliseconds(290), $"OPEN at {openArrived}, READ at {readArrived}");
     }
 
     [OpenSshFact]
