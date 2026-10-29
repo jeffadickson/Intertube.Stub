@@ -44,12 +44,70 @@ public class SshCryptoTests
         foreach (var algorithm in pair.SignatureAlgorithms)
         {
             var signature = pair.Sign(algorithm, data);
-            Assert.True(parsed.Verify(data, signature));
-            Assert.False(parsed.Verify([.. data, 1], signature));
+            Assert.True(parsed.Verify(data, signature, algorithm));
+            Assert.False(parsed.Verify([.. data, 1], signature, algorithm));
+            Assert.False(parsed.Verify(data, [.. signature, 0], algorithm));
+            foreach (var other in new[] { "ssh-rsa", "rsa-sha2-256", "rsa-sha2-512", "ssh-ed25519", "ecdsa-sha2-nistp256" }.Where(a => a != algorithm))
+                Assert.False(parsed.Verify(data, signature, other));
         }
         Assert.Equal(pair.PublicKey, parsed);
         Assert.StartsWith("SHA256:", parsed.Fingerprint);
     }
+
+    [Theory]
+    [InlineData("ffffffff")]
+    [InlineData("80000000")]
+    [InlineData("00000005aabb")]
+    public void SshReader_StringLongerThanTheMessage_IsAProtocolError(string hex)
+    {
+        var bytes = Convert.FromHexString(hex);
+        Assert.Throws<SshProtocolException>(() => new SshReader(bytes).String().Length);
+    }
+
+    [Theory]
+    [InlineData("00000000")] // zero
+    [InlineData("0000000180")] // negative
+    [InlineData("000000020001")] // needless leading zero
+    [InlineData("00000002007f")]
+    [InlineData("00000003010203")] // too long for 2 bytes
+    public void UnsignedFixed_RejectsAnythingButAMinimalPositiveMpint(string hex)
+    {
+        var bytes = Convert.FromHexString(hex);
+        Assert.Throws<SshProtocolException>(() => new SshReader(bytes).UnsignedFixed(2));
+    }
+
+    [Fact]
+    public void UnsignedFixed_AcceptsMinimalEncodings()
+    {
+        Assert.Equal(new byte[] { 0, 0x7f }, new SshReader(Convert.FromHexString("000000017f")).UnsignedFixed(2));
+        Assert.Equal(new byte[] { 0x80, 1 }, new SshReader(Convert.FromHexString("00000003008001")).UnsignedFixed(2));
+    }
+
+    [Fact]
+    public void EcdsaVerify_RejectsReencodedOrPaddedSignatures()
+    {
+        using var pair = SshKeyPair.CreateEcdsa();
+        var algorithm = pair.SignatureAlgorithms[0];
+        var data = Encoding.UTF8.GetBytes("exchange hash");
+        byte[] signature;
+        do signature = pair.Sign(algorithm, data);
+        while (SignatureParts(signature).R[0] == 0); // a minimal r whose top bit is clear, so a padded copy is non-minimal
+
+        var (r, s) = SignatureParts(signature);
+        Assert.True(pair.PublicKey.Verify(data, signature, algorithm));
+        Assert.False(pair.PublicKey.Verify(data, Signature(algorithm, new SshWriter().String([0, .. r]).String(s)), algorithm));
+        Assert.False(pair.PublicKey.Verify(data, Signature(algorithm, new SshWriter().String(r).String(s).Byte(0)), algorithm));
+    }
+
+    private static (byte[] R, byte[] S) SignatureParts(byte[] signature)
+    {
+        var outer = new SshReader(signature);
+        outer.Utf8();
+        var inner = new SshReader(outer.String());
+        return (inner.String().ToArray(), inner.String().ToArray());
+    }
+
+    private static byte[] Signature(string algorithm, SshWriter rs) => new SshWriter().String(algorithm).String(rs.Span).ToArray();
 
     [Fact]
     public void PublicKeyParse_RejectsMismatchedTypeAndGarbage()

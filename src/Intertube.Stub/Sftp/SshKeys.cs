@@ -70,43 +70,58 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         return new SshPublicKey(algorithm, blob.ToArray(), comment);
     }
 
-    /// <summary>Check an SSH signature blob (<c>string algorithm, string signature</c>) over <paramref name="data"/>.</summary>
-    internal bool Verify(ReadOnlySpan<byte> data, ReadOnlySpan<byte> signatureBlob)
+    /// <summary>
+    /// Whether this key can check a signature of type <paramref name="algorithm"/>: the key's own type,
+    /// or for RSA keys rsa-sha2-256, rsa-sha2-512 or (SHA-1) ssh-rsa.
+    /// </summary>
+    internal bool Supports(string? algorithm) => Algorithm switch
     {
+        "ssh-rsa" => algorithm is "rsa-sha2-256" or "rsa-sha2-512" or "ssh-rsa",
+        "ssh-ed25519" or "ecdsa-sha2-nistp256" or "ecdsa-sha2-nistp384" or "ecdsa-sha2-nistp521" => algorithm == Algorithm,
+        _ => false,
+    };
+
+    /// <summary>
+    /// Check an SSH signature blob (<c>string algorithm, string signature</c>) over <paramref name="data"/>.
+    /// The blob's algorithm must be <paramref name="algorithm"/>, the one the request declared (RFC 8332 section 3.2).
+    /// </summary>
+    internal bool Verify(ReadOnlySpan<byte> data, ReadOnlySpan<byte> signatureBlob, string algorithm)
+    {
+        if (!Supports(algorithm)) return false;
         try
         {
             var signature = new SshReader(signatureBlob);
             var signatureAlgorithm = signature.Utf8();
             var signatureBytes = signature.String();
+            if (signatureAlgorithm != algorithm || !signature.AtEnd) return false;
             var key = new SshReader(_blob);
             key.Utf8();
             switch (Algorithm)
             {
                 case "ssh-ed25519":
-                    return signatureAlgorithm == Algorithm && Ed25519.Verify(key.String(), data, signatureBytes);
+                    return Ed25519.Verify(key.String(), data, signatureBytes);
 
                 case "ecdsa-sha2-nistp256" or "ecdsa-sha2-nistp384" or "ecdsa-sha2-nistp521":
                 {
-                    if (signatureAlgorithm != Algorithm) return false;
-                    var (curve, size, hash) = EcdsaCurve(key.Utf8());
+                    var curveName = key.Utf8();
+                    if ("ecdsa-sha2-" + curveName != Algorithm) return false;
+                    var (curve, size, hash) = EcdsaCurve(curveName);
                     using var ecdsa = ECDsa.Create(new ECParameters { Curve = curve, Q = DecodePoint(key.String(), size) });
                     var rs = new SshReader(signatureBytes);
                     var p1363 = new byte[size * 2];
                     rs.UnsignedFixed(size).CopyTo(p1363, 0);
                     rs.UnsignedFixed(size).CopyTo(p1363, size);
-                    return ecdsa.VerifyData(data, p1363, hash, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+                    return rs.AtEnd && ecdsa.VerifyData(data, p1363, hash, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
                 }
 
                 case "ssh-rsa":
                 {
-                    var hash = signatureAlgorithm switch
+                    var hash = algorithm switch
                     {
                         "rsa-sha2-256" => HashAlgorithmName.SHA256,
                         "rsa-sha2-512" => HashAlgorithmName.SHA512,
-                        "ssh-rsa" => HashAlgorithmName.SHA1,
-                        _ => default,
+                        _ => HashAlgorithmName.SHA1,
                     };
-                    if (hash == default) return false;
                     var exponent = key.String().ToArray();
                     var modulus = key.String().TrimStart((byte)0).ToArray();
                     using var rsa = RSA.Create(new RSAParameters { Exponent = exponent, Modulus = modulus });

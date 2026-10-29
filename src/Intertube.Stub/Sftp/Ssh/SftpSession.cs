@@ -8,7 +8,7 @@ namespace Intertube.Stub.Sftp.Ssh;
 /// The SFTP version 3 subsystem (draft-ietf-secsh-filexfer-02) on one channel, plus the OpenSSH
 /// extensions clients rely on: posix-rename, fsync and limits.
 /// </summary>
-internal sealed class SftpSession(SftpServer server, Connection connection, SshChannel channel, string user)
+internal sealed class SftpSession(SftpServer server, Connection connection, SshChannel channel, string user, CancellationToken lifetime)
 {
     private const int MaxPacket = 256 * 1024 + 1024;
     private const int MaxRead = 255 * 1024;
@@ -21,7 +21,7 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
 
     public async Task RunAsync()
     {
-        var token = connection.CancellationToken;
+        var token = lifetime;
         var input = channel.Inbound.Reader;
         try
         {
@@ -44,6 +44,19 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
         catch (Exception ex) when (ex is IOException or ObjectDisposedException || (ex is OperationCanceledException && token.IsCancellationRequested))
         {
             // The connection or channel went away mid-request.
+        }
+        catch (Exception ex)
+        {
+            // Bad framing, or a bug: close the channel so the client is not left waiting. Bugs are rethrown to reach the server's errors.
+            connection.Transcript.RecordMessage(TranscriptDirection.Event, $"SFTP subsystem stopped: {ex.Message}");
+            try
+            {
+                await channel.CloseAsync(token).ConfigureAwait(false);
+            }
+            catch (Exception closeError) when (closeError is IOException or ObjectDisposedException or OperationCanceledException)
+            {
+            }
+            if (ex is not SshProtocolException) throw;
         }
         finally
         {
@@ -106,7 +119,7 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
         {
             request = Parse(packet);
         }
-        catch (SshProtocolException ex)
+        catch (Exception ex)
         {
             var id = packet.Length >= 5 ? BinaryPrimitives.ReadUInt32BigEndian(packet.AsSpan(1)) : 0;
             await StatusAsync(id, SftpStatus.BadMessage, ex.Message, token).ConfigureAwait(false);
@@ -140,10 +153,10 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
             {
                 var handle = HandleKey(r.String());
                 var offset = r.UInt64();
-                var length = (int)r.UInt32();
+                var length = r.UInt32();
                 var start = packet.Length - r.Remaining;
-                if (length > r.Remaining) throw new SshProtocolException("WRITE data is shorter than its length.");
-                return request with { HandleId = handle, Offset = offset, Data = packet.AsMemory(start, length) };
+                if (length > (uint)r.Remaining) throw new SshProtocolException("WRITE data is shorter than its length.");
+                return request with { HandleId = handle, Offset = offset, Data = packet.AsMemory(start, (int)length) };
             }
             case FSetStat:
                 return request with { HandleId = HandleKey(r.String()), Attributes = ReadAttributes(ref r) };
@@ -190,8 +203,10 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
                     : (flags & FlagExclusive) != 0 ? FileMode.CreateNew
                     : (flags & FlagTruncate) != 0 ? FileMode.Create
                     : FileMode.OpenOrCreate;
-                var stream = Files.OpenFile(request.Path, mode, access);
-                await SendHandleAsync(id, new FileHandle(request.Path, stream, (flags & FlagAppend) != 0), token).ConfigureAwait(false);
+                // .NET will not create or truncate without write access; the handle still only grants what was asked.
+                var open = mode is FileMode.CreateNew or FileMode.Create or FileMode.Truncate ? access | FileAccess.Write : access;
+                var stream = Files.OpenFile(request.Path, mode, open);
+                await SendHandleAsync(id, new FileHandle(request.Path, stream, access, (flags & FlagAppend) != 0), token).ConfigureAwait(false);
                 return;
             }
 
@@ -210,6 +225,12 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
                 var handle = Lookup<FileHandle>(request.HandleId);
                 var length = (int)Math.Min(request.Length, MaxRead);
                 if (await AdmitAsync(SftpOperation.Read, handle.Path, request with { Length = (uint)length }, token).ConfigureAwait(false)) return;
+                if (!handle.Access.HasFlag(FileAccess.Read)) throw new SftpException(SftpStatus.PermissionDenied, "Not opened for reading.");
+                if (request.Offset >= (ulong)handle.Stream.Length)
+                {
+                    await StatusAsync(id, SftpStatus.Eof, "End of file.", token).ConfigureAwait(false);
+                    return;
+                }
                 var buffer = new byte[length];
                 handle.Stream.Position = (long)request.Offset;
                 var filled = 0;
@@ -230,6 +251,8 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
             {
                 var handle = Lookup<FileHandle>(request.HandleId);
                 if (await AdmitAsync(SftpOperation.Write, handle.Path, request, token).ConfigureAwait(false)) return;
+                if (!handle.Access.HasFlag(FileAccess.Write)) throw new SftpException(SftpStatus.PermissionDenied, "Not opened for writing.");
+                if (request.Offset > long.MaxValue) throw new SftpException(SftpStatus.Failure, "Offset out of range.");
                 handle.Stream.Position = handle.Append ? handle.Stream.Length : (long)request.Offset;
                 handle.Stream.Write(request.Data.Span);
                 await StatusAsync(id, SftpStatus.Ok, "", token).ConfigureAwait(false);
@@ -528,9 +551,12 @@ internal sealed class SftpSession(SftpServer server, Connection connection, SshC
         }
     }
 
-    private sealed class FileHandle(string path, Stream stream, bool append) : Handle(path)
+    private sealed class FileHandle(string path, Stream stream, FileAccess access, bool append) : Handle(path)
     {
         public Stream Stream { get; } = stream;
+
+        /// <summary>What the client asked for, which may be less than the stream allows.</summary>
+        public FileAccess Access { get; } = access;
 
         public bool Append { get; } = append;
 
