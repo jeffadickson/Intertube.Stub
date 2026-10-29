@@ -64,6 +64,29 @@ public class FaultTests
     }
 
     [Fact]
+    public async Task Abort_WhileTheHandlerIsReading_CutsAnIdleClient()
+    {
+        // A protocol loop always has a read pending; the client here is idle, waiting for a reply,
+        // so nothing it sends will provoke a reset. Abort itself has to tear the connection down.
+        var reading = new TaskCompletionSource<Connection>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = TcpServer.Listen(0, async c =>
+        {
+            var pending = c.ReadLineAsync();
+            reading.SetResult(c);
+            await pending;
+        });
+        using var client = new TcpClient();
+        await client.ConnectAsync(server.Host, server.Port);
+        var connection = await reading.Task;
+        await Task.Delay(100); // let the read reach the socket
+
+        connection.Abort();
+
+        var read = client.GetStream().ReadAsync(new byte[1]).AsTask();
+        Assert.True(await Task.WhenAny(read, Task.Delay(TimeSpan.FromSeconds(5))) == read, "the client never saw the connection end");
+    }
+
+    [Fact]
     public async Task DisconnectAfter_CloseMode_SendsEndOfStream()
     {
         await using var server = TcpServer.Listen(0, async c => await c.WriteAsync("0123456789"),
