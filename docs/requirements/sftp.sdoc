@@ -86,13 +86,12 @@ UID: ITS-SFTP-006
 STATUS: Active
 TITLE: Cipher and MAC offer is configurable
 STATEMENT: >>>
-The server shall offer exactly ``SftpServerOptions.Ciphers`` (default: all supported ciphers) and ``SftpServerOptions.Macs`` (default: all supported MACs) in that preference order. ``Start`` shall throw if ``Ciphers`` names a cipher the server does not implement.
+The server shall offer exactly ``SftpServerOptions.Ciphers`` (default: all supported ciphers) and ``SftpServerOptions.Macs`` (default: all supported MACs) in that preference order. ``Start`` shall throw ``ArgumentException`` (parameter name ``options``) if ``Ciphers`` names a cipher, or ``Macs`` a MAC, that the server does not implement, with a message naming the unsupported entry and listing the supported ones.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Sftp/SftpServer.cs
-<<<
-COMMENT: >>>
-No automated test. Restricting the offer is not exercised; the cipher matrix test restricts the client instead. Unknown MAC names are not validated at start-up (see the final report).
+- SftpServerTests.Start_UnknownCipher_ThrowsArgumentExceptionListingTheSupportedOnes
+- SftpServerTests.Start_UnknownMac_ThrowsArgumentExceptionListingTheSupportedOnes
+- SftpServerTests.RestrictedCiphersAndMacs_AreOfferedExactly_InOrder
 <<<
 
 [REQUIREMENT]
@@ -123,11 +122,12 @@ UID: ITS-SFTP-009
 STATUS: Active
 TITLE: Request log
 STATEMENT: >>>
-Every SFTP request that reaches the request gate shall be appended to ``SftpServer.Requests`` in arrival order as an ``SftpRequest`` carrying the ``SftpOperation``, the normalised absolute path (for handle operations, the path the handle was opened with), the authenticated user, the ``Connection``, and where applicable ``TargetPath`` (rename), ``Offset`` and ``Length`` (read and write) and ``OpenFlags`` (open).
+Every SFTP request that reaches the request gate shall be appended to ``SftpServer.Requests`` in arrival order as an ``SftpRequest`` carrying the ``SftpOperation``, the normalised absolute path (for handle operations, the path the handle was opened with, or empty when the session has no such handle; see ITS-SFTP-028), the authenticated user, the ``Connection``, and where applicable ``TargetPath`` (rename), ``Offset`` and ``Length`` (read and write) and ``OpenFlags`` (open).
 <<<
 VERIFIED_BY: >>>
 - OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
 - OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+- SftpServerTests.UnknownHandle_IsRecorded_AndAnsweredWithFailure
 - SftpExample.FailedWrite_IsRetriedOnANewConnection
 <<<
 
@@ -170,6 +170,7 @@ VERIFIED_BY: >>>
 - OpenSshSftpTests.FailNext_FailsOneUpload_ThenTheRetrySucceeds
 - SftpExample.FailedWrite_IsRetriedOnANewConnection
 - SftpExample.CollectInbox_DeleteFailure_KeepsTheFile
+- SftpServerTests.UnknownHandle_CanBeFailedByRulesAndIntercept
 <<<
 
 [REQUIREMENT]
@@ -182,6 +183,7 @@ STATEMENT: >>>
 VERIFIED_BY: >>>
 - OpenSshSftpTests.PermissionDenied_FromFailAlways_IsReportedPerFile
 - SftpExample.PermissionDenied_IsNotRetried
+- SftpServerTests.UnknownHandle_CanBeFailedByRulesAndIntercept
 <<<
 
 [REQUIREMENT]
@@ -189,11 +191,12 @@ UID: ITS-SFTP-014
 STATUS: Active
 TITLE: Intercept hook
 STATEMENT: >>>
-Before carrying out each recorded request that no failure rule has answered, the server shall await ``SftpServer.Intercept`` if set; a non-null result shall be sent as the request's STATUS instead of doing the work, and null shall let the request proceed. Failure rules registered with ``FailNext`` or ``FailAlways`` shall take precedence over ``Intercept``.
+Before carrying out each recorded request that no failure rule has answered, the server shall await ``SftpServer.Intercept`` if set; a non-null result shall be sent as the request's STATUS instead of doing the work, and null shall let the request proceed. Failure rules registered with ``FailNext`` or ``FailAlways`` shall take precedence over ``Intercept``. Requests naming an invalid handle and OPEN or OPENDIR requests beyond the handle limit shall reach failure rules and ``Intercept`` like any other (ITS-SFTP-024, ITS-SFTP-028).
 <<<
 VERIFIED_BY: >>>
 - OpenSshSftpTests.SlowServer_InterceptCanDelayRequests
 - SftpExample.HungServer_HitsTheOperationTimeout
+- SftpServerTests.UnknownHandle_CanBeFailedByRulesAndIntercept
 <<<
 
 [REQUIREMENT]
@@ -871,13 +874,10 @@ UID: ITS-SFTP-020
 STATUS: Active
 TITLE: Malformed request gives BadMessage
 STATEMENT: >>>
-A request whose fields overrun its packet (or a WRITE whose data is shorter than its declared length) shall be answered with SSH_FX_BAD_MESSAGE, using the request id when the packet is long enough to hold one and 0 otherwise, and the session shall continue.
+A request whose fields overrun its packet (or a WRITE whose data is shorter than its declared length) shall be answered with SSH_FX_BAD_MESSAGE, using the request id when the packet is long enough to hold one and 0 otherwise, and the session shall continue. Such a request shall not be recorded.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SftpServerTests.MalformedRequests_AreAnsweredWithBadMessage_AndTheSessionContinues
 <<<
 
 [REQUIREMENT]
@@ -923,13 +923,10 @@ UID: ITS-SFTP-024
 STATUS: Active
 TITLE: Open handle limit
 STATEMENT: >>>
-An OPEN made while 1024 handles are open in the session shall be answered with SSH_FX_FAILURE.
+File handles (OPEN) and directory handles (OPENDIR) shall count together towards a limit of 1024 open handles per session. An OPEN or OPENDIR made while 1024 handles are open shall be answered with SSH_FX_FAILURE ("Too many open handles."), after it has been recorded and offered to failure rules and ``Intercept``; closing a handle shall make room for another.
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
-<<<
-COMMENT: >>>
-No automated test. OPENDIR does not check the limit.
+- SftpServerTests.HandleLimit_CountsFilesAndDirectories_AndAppliesToOpenAndOpenDir
 <<<
 
 [REQUIREMENT]
@@ -972,13 +969,12 @@ UID: ITS-SFTP-028
 STATUS: Active
 TITLE: Invalid handle
 STATEMENT: >>>
-A request naming a handle that does not exist in the session, or of the wrong kind (a directory handle for READ, WRITE or FSYNC, a file handle for READDIR), shall be answered with SSH_FX_FAILURE and shall not be recorded or offered to failure rules or ``Intercept``.
+A request naming a handle (CLOSE, READ, WRITE, FSTAT, FSETSTAT, READDIR or FSYNC) shall be recorded and offered to failure rules and ``Intercept`` before the handle is checked. A handle that does not exist in the session shall be recorded with an empty path; a handle of the wrong kind (a directory handle for READ, WRITE or FSYNC, a file handle for READDIR) with the path it was opened with. Unless a failure rule or ``Intercept`` answers it, such a request shall then be answered with SSH_FX_FAILURE ("Invalid handle.").
 <<<
 VERIFIED_BY: >>>
-- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
-<<<
-COMMENT: >>>
-No automated test.
+- SftpServerTests.UnknownHandle_IsRecorded_AndAnsweredWithFailure
+- SftpServerTests.UnknownHandle_CanBeFailedByRulesAndIntercept
+- SftpServerTests.HandleOfTheWrongKind_IsRecordedWithItsPath_AndAnsweredWithFailure
 <<<
 
 [REQUIREMENT]
