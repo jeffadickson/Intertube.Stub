@@ -5,8 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: How many times to run the test
+        description: How many times to run the tests
         default: "10"
+      filter:
+        description: dotnet test filter; empty runs the whole suite, as under CI load
+        default: ""
 
 jobs:
   debug:
@@ -22,7 +25,7 @@ jobs:
         with:
           dotnet-version: 10.0.x
       - run: sftp -V 2>&1 || true
-      - run: dotnet build tests/Intertube.Stub.Tests
+      - run: dotnet build Intertube.slnx
       - name: Capture FIN/RST on loopback
         run: |
           sudo tcpdump -i lo0 -nn -tttt -l 'tcp[tcpflags] & (tcp-rst|tcp-fin) != 0 and not port 22' > tcpdump.txt 2>&1 &
@@ -33,7 +36,7 @@ jobs:
           for i in $(seq 1 ${{ inputs.runs }}); do
             echo "::group::run $i"
             date -u +%H:%M:%S.%N
-            if ! dotnet test tests/Intertube.Stub.Tests --no-build --filter "FullyQualifiedName~ConnectionDroppedMidUpload" --logger "console;verbosity=normal"; then
+            if ! dotnet test Intertube.slnx --no-build ${{ inputs.filter != '' && format('--filter "{0}"', inputs.filter) || '' }} --logger "console;verbosity=normal"; then
               failures=$((failures+1))
               echo "::warning::run $i failed"
             fi
