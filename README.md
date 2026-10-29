@@ -1,5 +1,7 @@
 # Intertube.Stub
 
+[![CI](https://github.com/jeffadickson/Intertube.Stub/actions/workflows/ci.yml/badge.svg)](https://github.com/jeffadickson/Intertube.Stub/actions/workflows/ci.yml)
+
 Tiny embedded servers for tests: think **WireMock for arbitrary TCP protocols**. It's inspired by
 Python's `socketserver`: bind a port, write a handler, and let the library deal with the accept
 loop and shutdown. Intertube.Stub adds the things test doubles need, such as transcripts, assertions,
@@ -194,3 +196,7 @@ hand `mail.Data` to MimeKit.
 ```
 dotnet test
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

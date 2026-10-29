@@ -9,7 +9,12 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
 
     <PackageId>Intertube.Stub</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.1.0-preview</Version>
+    <Authors>Jeff Dickson</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/jeffadickson/Intertube.Stub</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jeffadickson/Intertube.Stub</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
     <Description>Tiny embedded TCP, UDP, Unix-socket, TLS, SFTP and SMTP servers for tests: ephemeral ports, line and stream handlers, transcripts, assertions and fault injection. Think WireMock for arbitrary wire protocols.</Description>
     <PackageTags>tcp;udp;socket;tls;sftp;ssh;smtp;mock;stub;test-double;testing;server</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
