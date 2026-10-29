@@ -1,0 +1,1764 @@
+[DOCUMENT]
+TITLE: Intertube.Stub core library requirements
+OPTIONS:
+  VIEW_STYLE: Table
+
+[GRAMMAR]
+IMPORT_FROM_FILE: intertube.sgra
+
+[TEXT]
+STATEMENT: >>>
+This document states the requirements for the core of Intertube.Stub: the types in ``src/Intertube.Stub/*.cs`` and ``src/Intertube.Stub/Internal/`` that make up the stream servers (``TcpServer``, ``UnixServer``), the ``Connection`` they hand to handlers, TLS, the ready-made handlers and protocol helpers (``Handler``, ``LineResponder``, ``LineMatcher``, ``Conversation``), fault injection (``FaultOptions``), transcripts with their assertion and wait helpers, and ``UdpServer``. The ready-made SMTP and SFTP servers are covered by their own documents.
+
+The key words "shall", "should" and "may" carry the meaning given in RFC 2119. Requirements with status Active describe current, intended behaviour; Deferred and Rejected entries record review decisions and their reasons.
+
+VERIFIED_BY lists the automated tests that demonstrate a requirement, one per line as ``TypeName.MemberName``: the C# test class and method, or for F# the module name and the test's double-backticked name. Tests live in ``tests/Intertube.Stub.Tests``, ``examples/Intertube.Stub.Examples``, ``examples/Intertube.Stub.FSharp`` and ``samples/RedisLite.Tests``. A line starting with "Review:" names a file or document that shows the behaviour where no automated test covers it; such requirements also carry the comment "No automated test."
+<<<
+
+[[SECTION]]
+TITLE: General properties
+
+[REQUIREMENT]
+UID: ITS-GEN-001
+STATUS: Active
+TITLE: Target frameworks
+STATEMENT: >>>
+The ``Intertube.Stub`` package shall target ``net8.0`` and ``net10.0``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj (TargetFrameworks); .github/workflows/ci.yml builds and tests both frameworks
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-GEN-002
+STATUS: Active
+TITLE: Minimal dependencies
+STATEMENT: >>>
+The core library shall have no package dependencies other than ``System.IO.Pipelines``, and that one only for ``net8.0`` (it is part of the shared framework on ``net10.0``).
+<<<
+RATIONALE: >>>
+A test double should not drag third-party packages into the test projects that use it.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj (PackageReference items)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-GEN-003
+STATUS: Active
+TITLE: Native AOT compatibility
+STATEMENT: >>>
+The library shall be marked ``IsAotCompatible`` and shall build without trimming or AOT analyzer warnings, so it can be used from Native AOT and trimmed test hosts.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj (IsAotCompatible); .github/workflows/ci.yml builds with -warnaserror
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-GEN-004
+STATUS: Active
+TITLE: Loopback binding by default
+STATEMENT: >>>
+``TcpServer.Listen(int, ...)`` and ``UdpServer.Listen(int, ...)`` shall bind to ``127.0.0.1``; binding to any other address shall require the caller to pass an ``IPEndPoint`` explicitly. Port 0 shall select a free ephemeral port, reported by ``Port``.
+<<<
+RATIONALE: >>>
+A stub accepts whatever it is sent; it must not be reachable from the network unless a test asks for that.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadmeExample_RepliesOnEphemeralPort
+- UdpServerTests.Replies_ToEachDatagram
+<<<
+
+[REQUIREMENT]
+UID: ITS-GEN-005
+STATUS: Active
+TITLE: Thread safety
+STATEMENT: >>>
+Server properties (``Errors``, ``ActiveConnections``, ``Transcript``) and transcript queries, assertions and waits shall be safe to call from any thread while handlers are running; collection-valued properties shall return snapshots. A ``Connection``, like a ``Stream``, shall support one concurrent reader and one concurrent writer.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Concurrent_HandlesClientsInParallel
+- RobustnessTests.MaxConcurrency_LimitsHandlersRunningAtOnce
+<<<
+
+[REQUIREMENT]
+UID: ITS-GEN-006
+STATUS: Active
+TITLE: Throwing log callback is contained
+STATEMENT: >>>
+An exception thrown by the ``ServerOptions.Log`` or ``UdpServerOptions.Log`` callback shall be swallowed: it shall not fail the handler, be added to ``Errors``, stop the server or make ``DisposeAsync`` throw.
+<<<
+RATIONALE: >>>
+xUnit's ``ITestOutputHelper.WriteLine`` throws once its test has finished, while a server may still be logging its shutdown.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.ALogCallbackThatThrows_DoesNotStopTheServer
+<<<
+COMMENT: >>>
+The UDP path uses the same guard (``ConnectionTranscript.SafeLog``) but has no test of its own.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Stream server lifecycle
+
+[REQUIREMENT]
+UID: ITS-SRV-001
+STATUS: Active
+TITLE: Listen starts the server
+STATEMENT: >>>
+``TcpServer.Listen`` shall bind, start listening and start accepting connections before it returns, running the given handler (a ``Func<Connection, Task>`` or an ``IConnectionHandler``) once per accepted connection.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadmeExample_RepliesOnEphemeralPort
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+- ProtocolTests.LineResponder_AnswersByRule
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-002
+STATUS: Active
+TITLE: Listen on a chosen endpoint
+STATEMENT: >>>
+``TcpServer.Listen(IPEndPoint, ...)`` shall bind to the given address and port, including IPv6 and wildcard addresses, and expose the bound address as ``EndPoint``. If binding fails the listening socket shall be disposed and the exception rethrown; a null endpoint or handler shall throw ``ArgumentNullException``.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.WildcardBind_ClientsConnectThroughLoopback
+<<<
+COMMENT: >>>
+IPv6 binding and the bind-failure path have no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-003
+STATUS: Active
+TITLE: Host maps wildcard binds to loopback
+STATEMENT: >>>
+``TcpServer.Host`` shall return the bound address as a string, except that ``IPAddress.Any`` shall map to ``127.0.0.1`` and ``IPAddress.IPv6Any`` to ``::1``, so the value can always be used by a client to connect.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.WildcardBind_ClientsConnectThroughLoopback
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-004
+STATUS: Active
+TITLE: Connections are numbered and recorded on accept
+STATEMENT: >>>
+Each accepted connection shall be given an ``Id`` starting at 1 and increasing per server, and shall be added to ``Transcript`` with a "connected from" event before its handler runs, including connections that wait behind ``MaxConcurrency``.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Transcript_ToString_IsReadable
+- RetryExample.RecoversFromTwoResets
+- TcpServerTests.Sequential_HandlesOneConnectionAtATime
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-005
+STATUS: Active
+TITLE: Concurrent handlers by default
+STATEMENT: >>>
+With ``MaxConcurrency`` null (the default) every accepted connection shall run its handler at once, in parallel with the others. ``ActiveConnections`` shall report the number of handlers still running.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Concurrent_HandlesClientsInParallel
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-006
+STATUS: Active
+TITLE: MaxConcurrency limits running handlers
+STATEMENT: >>>
+When ``ServerOptions.MaxConcurrency`` is set to n, at most n handlers shall run at once; further connections shall be accepted and recorded, then wait for a free slot. ``ServerOptions.Sequential`` shall be equivalent to ``MaxConcurrency = 1``.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.MaxConcurrency_LimitsHandlersRunningAtOnce
+- TcpServerTests.Sequential_HandlesOneConnectionAtATime
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-007
+STATUS: Active
+TITLE: MaxConcurrency validation
+STATEMENT: >>>
+Creating a stream server with ``MaxConcurrency`` less than 1 shall throw ``ArgumentOutOfRangeException``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/StreamServer.cs (StreamServer constructor)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-008
+STATUS: Active
+TITLE: Connection closed when the handler returns
+STATEMENT: >>>
+When a handler completes, by returning or by throwing, the server shall close its connection gracefully (as ``Connection.CloseAsync``) unless it is already closed or reset.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadmeExample_RepliesOnEphemeralPort
+- ConfigClientTests.scripted conversation: SET then GET, exactly in that order
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-009
+STATUS: Active
+TITLE: ConnectAsync opens a client connection
+STATEMENT: >>>
+``StreamServer.ConnectAsync`` shall open a client-side ``Connection`` to the server (through loopback for a wildcard bind) with the same read and write helpers, the server's encoding, newline and ``ReadTimeout``, no faults, and its own transcript that is not part of ``Server.Transcript``.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadLinesAsync_StreamsUntilClientCloses
+- RobustnessTests.WildcardBind_ClientsConnectThroughLoopback
+- FaultTests.DisconnectAfter_CloseMode_SendsEndOfStream
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-010
+STATUS: Active
+TITLE: Handler failures are captured
+STATEMENT: >>>
+An exception escaping a handler shall be added to ``Errors`` and recorded as a "handler failed: Type: message" event on the connection's transcript; it shall not stop the server or affect other connections.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.HandlerErrors_AreCapturedNotLost
+- ProtocolTests.Conversation_MismatchIsReportedWithStep
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-011
+STATUS: Active
+TITLE: Expected endings are not errors
+STATEMENT: >>>
+The following shall not be added to ``Errors``: a reset or disconnect by the peer, a ``ConnectionTerminatedException`` from a fault, any exception after this side has closed or reset the connection, any exception once the server is stopping, and a ``TlsHandshakeException``.
+<<<
+RATIONALE: >>>
+These are what a fault-injection test sets out to cause; reporting them as failures would make ``ThrowIfFaulted`` useless.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ClientReset_IsRecordedButNotAnError
+- FaultTests.DisconnectAfter_ResetsMidMessage
+- FaultTests.FaultsCanChangePerConnection
+- RobustnessTests.FailedTlsHandshake_IsAnEvent_NotAHandlerError
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-012
+STATUS: Active
+TITLE: ThrowIfFaulted
+STATEMENT: >>>
+``ThrowIfFaulted`` shall throw an ``AggregateException`` containing every recorded handler error if there is at least one, and do nothing otherwise.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.HandlerErrors_AreCapturedNotLost
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-013
+STATUS: Active
+TITLE: WaitForErrorsAsync
+STATEMENT: >>>
+``WaitForErrorsAsync(count, timeout)`` shall complete once at least ``count`` (default 1) handler errors have been recorded, and shall throw ``TimeoutException`` including the transcript if that does not happen within ``timeout`` (default 5 seconds).
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.HandlerErrors_AreCapturedNotLost
+- TcpServerTests.ReadTimeout_FailsTheHandler
+- RobustnessTests.Conversation_OnMismatchAppliesToComputedReplies
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-014
+STATUS: Active
+TITLE: Graceful stop
+STATEMENT: >>>
+``StopAsync`` and ``DisposeAsync`` shall stop accepting, cancel ``Stopping`` and every connection's ``CancellationToken``, and wait up to ``ServerOptions.ShutdownTimeout`` (default 2 seconds) for running handlers to finish. A handler that honours cancellation shall let the stop complete promptly, and its client shall see the connection end.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Dispose_StopsPromptlyEvenWithBlockedHandlers
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-015
+STATUS: Active
+TITLE: Forced reset after ShutdownTimeout
+STATEMENT: >>>
+Connections whose handlers are still running after ``ShutdownTimeout`` shall be reset (recorded as "reset"); a handler that still does not finish shall be abandoned after a second ``ShutdownTimeout`` so that stopping always completes.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.Stop_ResetsAHandlerThatIgnoresCancellation_AfterShutdownTimeout
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-016
+STATUS: Active
+TITLE: Stop is idempotent and does not throw for handler errors
+STATEMENT: >>>
+Calling ``StopAsync`` or ``DisposeAsync`` more than once shall return the same stop operation. Stopping shall not throw because a handler failed; handler failures are reported only through ``Errors``, ``ThrowIfFaulted`` and ``WaitForErrorsAsync``.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.HandlerErrors_AreCapturedNotLost
+- RobustnessTests.ALogCallbackThatThrows_DoesNotStopTheServer
+<<<
+COMMENT: >>>
+Calling stop twice has no automated test (see ``StreamServer.StopAsync``, which returns a cached ``Lazy<Task>``).
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-017
+STATUS: Active
+TITLE: Accept loop survives client failures
+STATEMENT: >>>
+A client that resets before or while it is being accepted, or a transient accept error, shall not stop the accept loop; the server shall back off briefly and keep accepting.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/StreamServer.cs (AcceptLoopAsync)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SRV-018
+STATUS: Rejected
+TITLE: Dispose throws when a handler failed
+STATEMENT: >>>
+``DisposeAsync`` would throw an ``AggregateException`` if any handler had failed.
+<<<
+RATIONALE: >>>
+Throwing from ``await using`` at the end of a test hides the test's real failure (an assertion that already failed would be replaced by the disposal exception) and makes cleanup paths throw. ``ThrowIfFaulted`` and ``WaitForErrorsAsync`` are the explicit opt-in for surfacing handler failures.
+<<<
+RELATIONS:
+- TYPE: Parent
+  VALUE: ITS-SRV-016
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Unix domain sockets
+
+[REQUIREMENT]
+UID: ITS-UNIX-001
+STATUS: Active
+TITLE: Temporary socket path
+STATEMENT: >>>
+``UnixServer.Listen(null, ...)`` shall bind a Unix domain socket at a fresh, unique path in the system temporary directory and expose it as ``Path``; the socket file shall exist while the server runs.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.UnixSocket_UsesTemporaryPathAndCleansUp
+- DockerUnixSocketExample.ListsOnlyRunningContainers
+<<<
+
+[REQUIREMENT]
+UID: ITS-UNIX-002
+STATUS: Active
+TITLE: Temporary socket file is deleted on stop
+STATEMENT: >>>
+When a ``UnixServer`` created with a null path stops, it shall delete its socket file, ignoring I/O and permission errors.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.UnixSocket_UsesTemporaryPathAndCleansUp
+<<<
+
+[REQUIREMENT]
+UID: ITS-UNIX-003
+STATUS: Active
+TITLE: Caller-supplied path is left alone
+STATEMENT: >>>
+When ``UnixServer.Listen`` is given a path, the server shall bind to that path and shall not delete the socket file when it stops.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/StreamServer.cs (UnixServer.OnStopped)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-UNIX-004
+STATUS: Active
+TITLE: Same features as TCP
+STATEMENT: >>>
+A ``UnixServer`` shall offer the same handler model, ``Connection`` API, transcript, errors, ``ConnectAsync`` and stop behaviour as ``TcpServer``, on Linux, macOS and Windows 10 or later.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.UnixSocket_UsesTemporaryPathAndCleansUp
+- ClientTests.UnixSocket_Works
+- DockerUnixSocketExample.Restart_PostsToTheRightEndpoint
+<<<
+
+[REQUIREMENT]
+UID: ITS-UNIX-005
+STATUS: Active
+TITLE: Abort on a Unix socket
+STATEMENT: >>>
+``Connection.Abort`` on a Unix domain socket, which has no TCP reset, shall close the socket immediately without a graceful shutdown and still record a "reset" event.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Connection.cs (Abort)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Connection
+
+[REQUIREMENT]
+UID: ITS-CONN-001
+STATUS: Active
+TITLE: ReadLineAsync
+STATEMENT: >>>
+``ReadLineAsync`` shall return the next line terminated by LF or CRLF, without the terminator, decoded with ``ServerOptions.Encoding`` (UTF-8 without BOM by default). At end of stream it shall return any unterminated remainder as a final line, then null.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadLinesAsync_StreamsUntilClientCloses
+- TcpServerTests.ReadmeExample_RepliesOnEphemeralPort
+<<<
+COMMENT: >>>
+The unterminated-final-line case has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-002
+STATUS: Active
+TITLE: ReadLinesAsync
+STATEMENT: >>>
+``ReadLinesAsync`` shall yield each line as ``ReadLineAsync`` would until the peer closes the connection.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadLinesAsync_StreamsUntilClientCloses
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-003
+STATUS: Active
+TITLE: ReadUntilAsync
+STATEMENT: >>>
+``ReadUntilAsync`` (byte or string delimiter) shall return the data before the delimiter and consume the delimiter. If the stream ends first it shall return null and leave any unterminated data buffered. An empty delimiter shall throw ``ArgumentException``.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.MixedFraming_LinesDelimitersAndExactBytesShareOneBuffer
+- Hl7MllpExample.Messages_AreAcknowledged_OnOneConnection
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-004
+STATUS: Active
+TITLE: ReadExactlyAsync
+STATEMENT: >>>
+``ReadExactlyAsync(count)`` shall return exactly ``count`` bytes, or throw ``EndOfStreamException`` if the stream ends first. A count of 0 shall return an empty array and a negative count shall throw ``ArgumentOutOfRangeException``.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.MixedFraming_LinesDelimitersAndExactBytesShareOneBuffer
+- MessageTranscriptTests.Messages_AreKeptApartFromBytes_AndAssertable
+- BinaryProtocolExample.RoundTrip
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-005
+STATUS: Active
+TITLE: ReadAsync and ReadToEndAsync
+STATEMENT: >>>
+``ReadAsync(Memory<byte>)`` shall return as many buffered or newly arrived bytes as fit (at least one), or 0 at end of stream. ``ReadToEndAsync`` shall return everything received until the peer closes its side.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ClientReset_IsRecordedButNotAnError
+- FaultTests.DisconnectAfter_CloseMode_SendsEndOfStream
+- FaultTests.Corrupt_IsDeterministicForASeed
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-006
+STATUS: Active
+TITLE: One shared input buffer
+STATEMENT: >>>
+All read helpers, ``Input`` (a ``PipeReader``) and ``Stream`` shall share one input buffer, so they can be mixed freely and no read helper loses data that another has buffered.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.MixedFraming_LinesDelimitersAndExactBytesShareOneBuffer
+- TcpServerTests.PipeReaderInput_SupportsBinaryParsing
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-007
+STATUS: Active
+TITLE: Stream view
+STATEMENT: >>>
+``Connection.Stream`` shall be a readable, writable, non-seekable ``Stream`` that reads from the shared buffer and writes through ``WriteAsync`` (so faults and the transcript apply); disposing it shall not close the connection.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Stream_CanBeUsedWithStandardReaders
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-008
+STATUS: Active
+TITLE: MaxLineLength
+STATEMENT: >>>
+A line or delimited frame longer than ``ServerOptions.MaxLineLength`` (default 1 MiB) shall make ``ReadLineAsync`` or ``ReadUntilAsync`` throw ``InvalidDataException`` instead of buffering without bound.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.OverlongLine_GetsA500AndTheConnectionCloses_WithoutAHandlerError
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-009
+STATUS: Active
+TITLE: ReadTimeout
+STATEMENT: >>>
+When ``ServerOptions.ReadTimeout`` is set, a read that receives no data within that time shall record a "read timed out" event and throw ``TimeoutException``, which counts as a handler error. With no ``ReadTimeout`` (the default) reads shall wait indefinitely.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadTimeout_FailsTheHandler
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-010
+STATUS: Active
+TITLE: Reads and writes observe cancellation
+STATEMENT: >>>
+Every read and write shall observe both the caller's ``CancellationToken`` and the connection's ``CancellationToken``, which is cancelled when the owning server starts to stop.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Dispose_StopsPromptlyEvenWithBlockedHandlers
+- TcpServerTests.Concurrent_HandlesClientsInParallel
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-011
+STATUS: Active
+TITLE: Byte and text writes
+STATEMENT: >>>
+``WriteAsync(ReadOnlyMemory<byte>)`` shall send the bytes through the connection's faults and record them as sent. ``WriteAsync(string)`` shall send the text encoded with ``ServerOptions.Encoding`` exactly as given, with no terminator.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.DisconnectAfter_CloseMode_SendsEndOfStream
+- BinaryProtocolExample.RoundTrip
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-012
+STATUS: Active
+TITLE: Line writes
+STATEMENT: >>>
+``WriteLineAsync`` shall send the text followed by ``ServerOptions.NewLine`` (CRLF by default), and ``WriteLinesAsync`` shall send several lines, each followed by ``NewLine``, in a single write.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.DisconnectAfter_ResetsMidMessage
+- InstrumentExample.IdentifiesAndMeasures
+- ProtocolTests.LineResponder_AnswersByRule
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-013
+STATUS: Active
+TITLE: Output pipe
+STATEMENT: >>>
+``Connection.Output`` shall be a ``PipeWriter`` whose data is sent, through the connection's faults and transcript, when flushed. Pending output shall be flushed before a TLS upgrade and on a graceful close.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.DisconnectAfterViaOutput_StillRecordsTheClose
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-014
+STATUS: Active
+TITLE: Graceful close
+STATEMENT: >>>
+``CloseAsync`` (and ``DisposeAsync``) shall flush ``Output``, end TLS if active, send FIN, record a "closed" event, then drain input for up to one second so that unread client data does not turn the close into a reset that discards the last response. Each step shall be best effort, and calling it again shall have no further effect.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadmeExample_RepliesOnEphemeralPort
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+- FaultTests.DisconnectAfter_CloseMode_SendsEndOfStream
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-015
+STATUS: Active
+TITLE: Abort
+STATEMENT: >>>
+``Abort`` shall drop the connection immediately with a TCP reset, including a connection part way through a graceful close, and record a "reset" event. It shall also cut a client that is idle while the handler has a read pending.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.Abort_WhileTheHandlerIsReading_CutsAnIdleClient
+- FaultTests.Reset_RefusesService
+- ConfigClientTests.a reset on the first connection is retried
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-016
+STATUS: Active
+TITLE: IsTerminated and Terminated
+STATEMENT: >>>
+``IsTerminated`` shall become true, and the ``Terminated`` token shall be cancelled, once this side closes or resets the connection (by the handler, a fault, an interceptor or server shutdown). The peer closing shall not set them. An exception thrown by a ``Terminated`` callback shall not prevent termination.
+<<<
+VERIFIED_BY: >>>
+- MessageTranscriptTests.Terminated_FiresOnAbort_ButNotWhenThePeerCloses
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-017
+STATUS: Active
+TITLE: Peer close
+STATEMENT: >>>
+When the peer closes its side, reads shall report end of stream (null or 0) and the transcript shall record "closed by peer" and become closed.
+<<<
+VERIFIED_BY: >>>
+- MessageTranscriptTests.Terminated_FiresOnAbort_ButNotWhenThePeerCloses
+- TcpServerTests.ReadLinesAsync_StreamsUntilClientCloses
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-018
+STATUS: Active
+TITLE: Peer reset
+STATEMENT: >>>
+A reset by the peer during a read, write or hang shall be recorded as a "reset by peer" event, mark the transcript closed, and not count as a handler error.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.PeerResetDuringAWrite_IsRecordedAsAReset
+- TcpServerTests.ClientReset_IsRecordedButNotAnError
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-019
+STATUS: Active
+TITLE: HangAsync
+STATEMENT: >>>
+``HangAsync`` shall record a "hanging" event, then read and discard input without ever replying until the peer disconnects or the server stops. ``ReadTimeout`` shall not apply to it.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.Hang_LetsClientTimeOut
+- RobustnessTests.Hang_IgnoresReadTimeout
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-020
+STATUS: Active
+TITLE: Buffered-input check for protocol layers
+STATEMENT: >>>
+The library-internal ``HasBufferedInput`` shall report whether, and how many, received bytes are buffered but unread, without consuming them, so protocol layers can detect commands pipelined after STARTTLS.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.StartTls_WithPipelinedCommands_IsRefusedAndClosed
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONN-021
+STATUS: Active
+TITLE: Connection identity
+STATEMENT: >>>
+A ``Connection`` shall expose its ``Id`` (as in its transcript), ``RemoteEndPoint``, ``LocalEndPoint`` and underlying ``Socket``.
+<<<
+VERIFIED_BY: >>>
+- RetryExample.RecoversFromTwoResets
+- ConfigClientTests.a reset on the first connection is retried
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: TLS
+
+[REQUIREMENT]
+UID: ITS-TLS-001
+STATUS: Active
+TITLE: Self-signed certificates on the fly
+STATEMENT: >>>
+``TlsOptions.SelfSigned(hostName)`` shall create options holding a fresh ECDSA P-256 server certificate with subject ``CN=hostName`` (default "localhost"), subject alternative names for ``hostName``, ``127.0.0.1`` and ``::1``, the server-authentication EKU, and validity from five minutes ago to seven days ahead, usable by the platform TLS stack on Windows, Linux and macOS.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.ImplicitTls_WithSelfSignedCertificate
+- ClientTests.Tls_WithAnOnTheFlyCertificate
+<<<
+
+[REQUIREMENT]
+UID: ITS-TLS-002
+STATUS: Active
+TITLE: Each certificate is distinct
+STATEMENT: >>>
+Every call to ``TlsOptions.CreateSelfSignedCertificate`` or ``SelfSigned`` shall generate a new key pair, so two stubs never share a certificate.
+<<<
+VERIFIED_BY: >>>
+- TlsPinningExample.RejectsAnyOtherCertificate
+- FtpExample.ImpostorCertificate_IsRejected
+<<<
+
+[REQUIREMENT]
+UID: ITS-TLS-003
+STATUS: Active
+TITLE: TrustServerCertificate
+STATEMENT: >>>
+``TlsOptions.TrustServerCertificate`` shall be a client validation callback that accepts exactly the options' ``Certificate`` (by certificate hash) and rejects any other or missing certificate.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.ImplicitTls_WithSelfSignedCertificate
+- ImapExample.UnseenMessages_AreHandled_ThenFlaggedSeen
+<<<
+
+[REQUIREMENT]
+UID: ITS-TLS-004
+STATUS: Active
+TITLE: Client certificates
+STATEMENT: >>>
+When ``ClientCertificateRequired`` is set the server shall request a client certificate; client certificates shall be validated by ``ClientCertificateValidation`` when given and otherwise accepted.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/TlsOptions.cs (ToServerOptions)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-TLS-005
+STATUS: Active
+TITLE: Protocol versions and ALPN
+STATEMENT: >>>
+``EnabledProtocols`` (default ``SslProtocols.None``, letting the OS choose) and ``ApplicationProtocols`` (ALPN) shall be applied to both server-side handshakes and client handshakes made by ``ConnectAsync`` or ``UpgradeToTlsAsync``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/TlsOptions.cs (ToServerOptions, ToClientOptions)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-TLS-006
+STATUS: Active
+TITLE: Implicit TLS
+STATEMENT: >>>
+When ``ServerOptions.Tls`` is set, the server shall complete a TLS handshake on every accepted connection, after any ``ConnectDelay`` and concurrency wait, before running the handler; ``IsTls`` shall then be true and a "TLS established (protocol)" event recorded.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.ImplicitTls_WithSelfSignedCertificate
+- ClientTests.Tls_WithAnOnTheFlyCertificate
+- TlsPinningExample.AcceptsThePinnedCertificate
+<<<
+
+[REQUIREMENT]
+UID: ITS-TLS-007
+STATUS: Active
+TITLE: ConnectAsync speaks TLS to a TLS server
+STATEMENT: >>>
+``ConnectAsync`` on a server with ``ServerOptions.Tls`` shall perform the client handshake, trusting exactly the server's certificate, and return a connection with ``IsTls`` true.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.ConnectAsync_TrustsTheServersTlsCertificate
+<<<
+
+[REQUIREMENT]
+UID: ITS-TLS-008
+STATUS: Active
+TITLE: STARTTLS upgrade
+STATEMENT: >>>
+``UpgradeToTlsAsync(options)`` shall switch a plaintext connection to TLS mid-stream: a server connection shall use the given options or ``ServerOptions.Tls``; a client connection shall trust the server's certificate. Output written before the call shall be flushed in plaintext first, and after the upgrade all reads, writes, ``Input`` and ``Output`` shall go through TLS.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.StartTls_UpgradesMidConversation
+- SmtpServerTests.StartTls_RequiredBeforeMail_AndTranscriptStaysReadable
+- FtpExample.Upload_IsEncryptedEndToEnd_VerifiedThenRenamed
+<<<
+
+[REQUIREMENT]
+UID: ITS-TLS-009
+STATUS: Active
+TITLE: Upgrade preconditions
+STATEMENT: >>>
+``UpgradeToTlsAsync`` shall throw ``InvalidOperationException`` when no options are given and none are configured, when the connection already uses TLS, or when unread input is buffered (bytes a client pipelined after STARTTLS must not be read as plaintext).
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Connection.cs (UpgradeToTlsAsync)
+<<<
+COMMENT: >>>
+No automated test. The SMTP server checks for pipelined input itself before calling the upgrade (see ITS-CONN-020).
+<<<
+
+[REQUIREMENT]
+UID: ITS-TLS-010
+STATUS: Active
+TITLE: Handshake failure handling
+STATEMENT: >>>
+A failed TLS handshake (certificate rejected, plaintext client, peer gone) shall record a "TLS handshake failed: reason" event and throw ``TlsHandshakeException``; on the server it shall end the connection without adding to ``Errors``. Cancellation during the handshake shall surface as ``OperationCanceledException`` instead.
+<<<
+RATIONALE: >>>
+A client that fails the handshake is usually exactly what a certificate-pinning or downgrade test provokes; it is the client's failure, not the stub's.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.FailedTlsHandshake_IsAnEvent_NotAHandlerError
+- FtpExample.ImpostorCertificate_IsRejected
+<<<
+
+[REQUIREMENT]
+UID: ITS-TLS-011
+STATUS: Active
+TITLE: Transcript holds plaintext under TLS
+STATEMENT: >>>
+Under TLS the transcript and ``Log`` shall record the decrypted application data, not TLS records.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.ImplicitTls_WithSelfSignedCertificate
+- SmtpServerTests.StartTls_RequiredBeforeMail_AndTranscriptStaysReadable
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Handlers, LineResponder and LineMatcher
+
+[REQUIREMENT]
+UID: ITS-HND-001
+STATUS: Active
+TITLE: Handler.Echo
+STATEMENT: >>>
+``Handler.Echo`` shall write every received byte back until the client closes.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ClientReset_IsRecordedButNotAnError
+- ProtocolTests.ConnectAsync_TrustsTheServersTlsCertificate
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-002
+STATUS: Active
+TITLE: Handler.Hang
+STATEMENT: >>>
+``Handler.Hang`` shall accept the connection and never reply (as ``Connection.HangAsync``), ending when the client disconnects or the server stops.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.Hang_LetsClientTimeOut
+- TcpServerTests.Dispose_StopsPromptlyEvenWithBlockedHandlers
+- ConfigClientTests.a hung service times out on every attempt, then fails
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-003
+STATUS: Active
+TITLE: Handler.Reset
+STATEMENT: >>>
+``Handler.Reset`` shall reset each connection as soon as it is accepted. The client may see the reset on its first read or write, or (on Linux and macOS) as a failed connect.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.Reset_RefusesService
+- RetryExample.RecoversFromTwoResets
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-004
+STATUS: Active
+TITLE: Handler.Close
+STATEMENT: >>>
+``Handler.Close`` shall close each connection gracefully as soon as it is accepted, without sending anything.
+<<<
+VERIFIED_BY: >>>
+- RetryExample.GivesUpAfterThreeAttempts
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-005
+STATUS: Active
+TITLE: Handler.Send
+STATEMENT: >>>
+``Handler.Send(string)`` shall send the text exactly as given, with no terminator added, and ``Handler.Send(ReadOnlyMemory<byte>)`` the bytes; both shall then close the connection gracefully.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.Corrupt_IsDeterministicForASeed
+- RobustnessTests.WildcardBind_ClientsConnectThroughLoopback
+- HttpApiExample.GarbageStatusLine_IsAnError
+<<<
+COMMENT: >>>
+The byte overload has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-006
+STATUS: Active
+TITLE: Handler.Lines and LinesAsync
+STATEMENT: >>>
+``Handler.Lines`` and ``Handler.LinesAsync`` shall answer each received line with the (awaited) returned line followed by ``NewLine``, send nothing when it returns null, and end when the client closes.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Log_ReceivesLiveTraffic
+- TcpServerTests.FailedAssertion_IncludesTranscript
+- ConfigClientTests.garbage from the service is a protocol error and is not retried
+<<<
+COMMENT: >>>
+``LinesAsync`` is exercised through ``Lines``, which delegates to it.
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-007
+STATUS: Rejected
+TITLE: Rename Handler.Send to SendRaw
+STATEMENT: >>>
+``Handler.Send`` would be renamed ``SendRaw`` to match ``Conversation.SendRaw``.
+<<<
+RATIONALE: >>>
+API churn for no behavioural gain: the documentation already states that ``Handler.Send`` sends the text exactly as given with no terminator, and there is no ``Handler`` line-sending counterpart to confuse it with.
+<<<
+RELATIONS:
+- TYPE: Parent
+  VALUE: ITS-HND-005
+
+[REQUIREMENT]
+UID: ITS-HND-008
+STATUS: Active
+TITLE: LineResponder greeting
+STATEMENT: >>>
+Lines given to ``LineResponder.Greeting`` shall be sent, in one write, as soon as a client connects and before any input is read.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.LineResponder_AnswersByRule
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-009
+STATUS: Active
+TITLE: LineResponder first matching rule wins
+STATEMENT: >>>
+For each received line, ``LineResponder`` shall apply the first rule, in registration order, whose matcher matches the line, and answer the line in any order relative to earlier lines' rules.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.LineResponder_AnswersByRule
+- ConfigClientTests.rule table: GET of a known and an unknown key
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-010
+STATUS: Active
+TITLE: LineResponder reply forms
+STATEMENT: >>>
+``LineResponder.On`` shall accept a fixed reply, a reply computed from the line, an asynchronously computed reply, or (with a ``Regex``) a reply computed from the ``Match``; a null reply shall send nothing.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.LineResponder_AnswersByRule
+- InstrumentExample.IdentifiesAndMeasures
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-011
+STATUS: Active
+TITLE: LineResponder OnAndClose
+STATEMENT: >>>
+A rule added with ``OnAndClose`` shall send its reply, if any, then close the connection gracefully and end the handler.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.LineResponder_AnswersByRule
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-012
+STATUS: Active
+TITLE: LineResponder fallback
+STATEMENT: >>>
+A line no rule matches shall be answered by the ``Otherwise`` reply (fixed or computed) when one is set, and ignored otherwise.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.LineResponder_AnswersByRule
+- ConfigClientTests.rule table: GET of a known and an unknown key
+<<<
+COMMENT: >>>
+The no-fallback case has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-013
+STATUS: Active
+TITLE: Strings are whole-line glob patterns
+STATEMENT: >>>
+A string converted to ``LineMatcher`` (implicitly or with ``LineMatcher.Glob``) shall match the whole line, with ``*`` matching any run of characters and ``?`` exactly one; a string without wildcards shall therefore match only that exact line. Matching shall be case-sensitive unless ``Glob(pattern, ignoreCase: true)`` is used.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadmeExample_RepliesOnEphemeralPort
+- ProtocolTests.LineResponder_AnswersByRule
+- InstrumentExample.IdentifiesAndMeasures
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-014
+STATUS: Active
+TITLE: Regex matchers
+STATEMENT: >>>
+A ``Regex`` converted to ``LineMatcher`` (implicitly or with ``LineMatcher.FromRegex``) shall search the line, matching anywhere unless the pattern is anchored.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.LineResponder_AnswersByRule
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-015
+STATUS: Active
+TITLE: Exact matcher
+STATEMENT: >>>
+``LineMatcher.Exact(text, comparison)`` shall match only a line equal to ``text`` under ``comparison`` (ordinal by default), treating ``*`` and ``?`` as ordinary characters.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/LineMatcher.cs (Exact)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-016
+STATUS: Active
+TITLE: Predicate and Any matchers
+STATEMENT: >>>
+``LineMatcher.Where(predicate, description)`` shall match lines for which the predicate returns true, and ``LineMatcher.Any`` shall match every line.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/LineMatcher.cs (Where, Any)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-HND-017
+STATUS: Active
+TITLE: Matcher descriptions
+STATEMENT: >>>
+Every ``LineMatcher`` shall have a readable ``Description`` (the quoted glob, ``exactly "text"``, ``/regex/``, or the predicate's description), used in assertion, wait and conversation failure messages.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.Conversation_MismatchIsReportedWithStep
+- TcpServerTests.WaitFor_TimesOutWithTranscript
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Conversation
+
+[REQUIREMENT]
+UID: ITS-CONV-001
+STATUS: Active
+TITLE: Steps run in order
+STATEMENT: >>>
+A ``Conversation`` shall run its steps strictly in the order they were added, once per connection, and the server shall close the connection when the script ends.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+- ConfigClientTests.scripted conversation: SET then GET, exactly in that order
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-002
+STATUS: Active
+TITLE: Reusable across connections
+STATEMENT: >>>
+A ``Conversation`` instance shall hold no per-connection state, so one instance can serve several connections, each starting at step 1.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Conversation.cs (HandleAsync)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-003
+STATUS: Active
+TITLE: Send lines
+STATEMENT: >>>
+``Send(line)`` shall send one line followed by ``NewLine``; ``Send(params lines)`` shall send several lines in one write.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-004
+STATUS: Active
+TITLE: SendRaw
+STATEMENT: >>>
+``SendRaw`` shall send text or bytes exactly as given, without a line terminator.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.Pipeline_WritesEveryCommandBeforeAnyReply
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-005
+STATUS: Active
+TITLE: Expect with fixed reply
+STATEMENT: >>>
+``Expect(matcher)`` shall read the next line and require it to match; ``Expect(matcher, reply)`` shall additionally send ``reply`` as a line when it does.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+- ConfigClientTests.scripted conversation: SET then GET, exactly in that order
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-006
+STATUS: Active
+TITLE: Expect with computed reply
+STATEMENT: >>>
+``Expect(matcher, Func<string, string>)`` shall send, as a line, the reply computed from the matched line.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-007
+STATUS: Active
+TITLE: Mismatch fails the handler with the step
+STATEMENT: >>>
+A line that does not match an ``Expect`` step, or the client closing instead of sending it, shall fail the handler with a ``ConversationException`` whose message names the step number and description and quotes the received line (escaped), or says the client closed the connection. The failure shall appear in ``Errors``.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.Conversation_MismatchIsReportedWithStep
+<<<
+COMMENT: >>>
+The client-closed case has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-008
+STATUS: Active
+TITLE: OnMismatch reply
+STATEMENT: >>>
+When ``OnMismatch(reply)`` is set, a mismatching line for any ``Expect`` overload shall first be answered with that reply, then fail as in ITS-CONV-007. No reply shall be sent when the client closed the connection.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.Conversation_MismatchIsReportedWithStep
+- RobustnessTests.Conversation_OnMismatchAppliesToComputedReplies
+<<<
+RELATIONS:
+- TYPE: Parent
+  VALUE: ITS-CONV-007
+
+[REQUIREMENT]
+UID: ITS-CONV-009
+STATUS: Active
+TITLE: ExpectBytes
+STATEMENT: >>>
+``ExpectBytes(expected)`` shall read exactly ``expected.Length`` bytes and fail with a ``ConversationException`` showing both values in hex if they differ.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.Pipeline_WritesEveryCommandBeforeAnyReply
+- MutationTargetedTests.Subscribe_CountsItsDedicatedConnection
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-010
+STATUS: Active
+TITLE: ExpectUntil
+STATEMENT: >>>
+``ExpectUntil(delimiter, verify)`` shall read up to the delimiter, pass the content (without the delimiter) to ``verify`` if given, and fail with a ``ConversationException`` if the stream ends first.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-011
+STATUS: Active
+TITLE: StartTls step
+STATEMENT: >>>
+``StartTls(options)`` shall upgrade the connection to TLS at that point in the script, using the given options or ``ServerOptions.Tls``.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.StartTls_UpgradesMidConversation
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-012
+STATUS: Active
+TITLE: Close, Reset and Hang steps
+STATEMENT: >>>
+``Close()`` shall close the connection gracefully, ``Reset()`` shall abort it, and ``Hang()`` shall stop replying until the client gives up, each at that point in the script.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+- SmtpExample.GreylistingServer_SurfacesTransientFailure
+<<<
+COMMENT: >>>
+The ``Reset()`` step has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-CONV-013
+STATUS: Active
+TITLE: Delay, WithFaults and Do steps
+STATEMENT: >>>
+``Delay(t)`` shall pause for ``t`` (ending early when the server stops), ``WithFaults(faults)`` shall set the connection's faults from that step on, and ``Do(action, description)`` shall run arbitrary code against the connection.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Conversation.cs (Delay, WithFaults, Do)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Fault injection
+
+[REQUIREMENT]
+UID: ITS-FAULT-001
+STATUS: Active
+TITLE: Server-wide faults
+STATEMENT: >>>
+``ServerOptions.Faults`` shall apply to every connection the server accepts. Client connections opened with ``ConnectAsync`` shall never have faults.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.Latency_DelaysWrites
+- FaultTests.Fragment_SplitsWritesIntoSeparateSegments
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-002
+STATUS: Active
+TITLE: Per-connection faults
+STATEMENT: >>>
+``Connection.Faults`` shall start as ``ServerOptions.Faults`` and may be replaced at any time; the new value shall apply from the next read or write.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.FaultsCanChangePerConnection
+- FtpExample.DataConnectionDroppedMidDownload_IsAnError_NotATruncatedFile
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-003
+STATUS: Active
+TITLE: Write latency
+STATEMENT: >>>
+``FaultOptions.Latency(t)`` (``WriteDelay``) shall delay every write by ``t`` before any of it is sent.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.Latency_DelaysWrites
+- InstrumentExample.FaultMatrix_EitherWorksOrFailsCleanly
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-004
+STATUS: Active
+TITLE: Read delay
+STATEMENT: >>>
+``ReadDelay`` shall delay each read from the underlying transport.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Internal/TapStream.cs (ReadAsync)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-005
+STATUS: Active
+TITLE: Connect delay
+STATEMENT: >>>
+``ConnectDelay`` shall hold an accepted connection silent for that long before the TLS handshake (if any) and the handler run.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.ConnectDelay_HoldsTheGreeting
+- InstrumentExample.FaultMatrix_EitherWorksOrFailsCleanly
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-006
+STATUS: Active
+TITLE: Fragmentation
+STATEMENT: >>>
+``FaultOptions.Fragment(size, delay)`` shall split every write into separately sent and separately recorded chunks of at most ``size`` bytes, pausing ``delay`` between chunks.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.Fragment_SplitsWritesIntoSeparateSegments
+- BinaryProtocolExample.ReassemblesAFrameDeliveredOneByteAtATime
+- Hl7MllpExample.AckDribbledOutOneByteAtATime_IsReassembled
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-007
+STATUS: Active
+TITLE: Disconnect after N bytes with reset
+STATEMENT: >>>
+``FaultOptions.DisconnectAfter(n)`` shall send exactly the first ``n`` bytes written on the connection (cutting mid-write if needed), record a "fault: disconnect after n bytes written" event, reset the connection, and end the handler with a ``ConnectionTerminatedException`` that is not counted as an error.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.DisconnectAfter_ResetsMidMessage
+- InstrumentExample.FaultMatrix_EitherWorksOrFailsCleanly
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-008
+STATUS: Active
+TITLE: Disconnect after N bytes with close
+STATEMENT: >>>
+With ``DisconnectMode.Close`` the fault shall close the connection with FIN instead, so the client reads exactly ``n`` bytes then end of stream.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.DisconnectAfter_CloseMode_SendsEndOfStream
+- BinaryProtocolExample.TruncatedFrame_IsEndOfStream
+- ConfigClientTests.a reply cut mid-line is an error, not a truncated value
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-009
+STATUS: Active
+TITLE: Disconnect fault through Output
+STATEMENT: >>>
+The disconnect fault shall apply equally to data flushed through ``Connection.Output``, and the close shall be recorded exactly once.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.DisconnectAfterViaOutput_StillRecordsTheClose
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-010
+STATUS: Active
+TITLE: TransformWrite
+STATEMENT: >>>
+``TransformWrite`` shall replace each outgoing buffer with the function's result before corruption, fragmentation and the disconnect limit are applied.
+<<<
+VERIFIED_BY: >>>
+- BinaryProtocolExample.InsaneLengthPrefix_IsRejectedBeforeAllocating
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-011
+STATUS: Active
+TITLE: Corruption
+STATEMENT: >>>
+``FaultOptions.Corrupt(rate, seed)`` shall flip one random bit in roughly ``rate`` of written bytes, preserving the length. A rate outside 0 to 1 shall throw ``ArgumentOutOfRangeException``.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.Corrupt_IsDeterministicForASeed
+- HedgehogProperties.Client_SurvivesCorruptReplies
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-012
+STATUS: Active
+TITLE: Deterministic corruption per connection
+STATEMENT: >>>
+Each connection shall draw corruption from its own generator seeded from ``CorruptSeed`` and the connection ``Id``, so the same options produce the same corrupted bytes on every run and every server, however connections interleave and however often a ``FaultOptions`` instance is reused.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.Corrupt_SameOptionsGiveTheSameBytesOnEveryServer
+- FaultTests.Corrupt_IsDeterministicForASeed
+<<<
+
+[REQUIREMENT]
+UID: ITS-FAULT-013
+STATUS: Active
+TITLE: Faults apply to plaintext under TLS
+STATEMENT: >>>
+On a TLS connection faults shall act on the application plaintext: byte counts are application bytes, and the TLS handshake shall not be affected.
+<<<
+VERIFIED_BY: >>>
+- FtpExample.DataConnectionDroppedMidDownload_IsAnError_NotATruncatedFile
+<<<
+COMMENT: >>>
+Covered only indirectly (a disconnect fault on a TLS-protected FTP data connection); no test checks byte counts under TLS.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Transcripts and assertions
+
+[REQUIREMENT]
+UID: ITS-TR-001
+STATUS: Active
+TITLE: Server transcript lists every connection
+STATEMENT: >>>
+``ServerTranscript.Connections`` (and the zero-based indexer) shall list a ``ConnectionTranscript`` for every accepted connection, in accept order. ``AssertConnectionCount(n)`` shall fail unless exactly ``n`` connections were accepted.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Sequential_HandlesOneConnectionAtATime
+- RetryExample.GivesUpAfterThreeAttempts
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-002
+STATUS: Active
+TITLE: Traffic recorded in order
+STATEMENT: >>>
+A ``ConnectionTranscript`` shall record, in order and with timestamps, every chunk of bytes received and sent and every event, available as ``Entries``; ``ReceivedBytes``, ``SentBytes``, ``ReceivedText`` and ``SentText`` shall concatenate the traffic in each direction.
+<<<
+VERIFIED_BY: >>>
+- FaultTests.Fragment_SplitsWritesIntoSeparateSegments
+- FaultTests.DisconnectAfter_ResetsMidMessage
+- MessageTranscriptTests.Messages_AreKeptApartFromBytes_AndAssertable
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-003
+STATUS: Active
+TITLE: Connection events
+STATEMENT: >>>
+``Events`` shall list the connection's events, including "connected from", "closed", "closed by peer", "reset", "reset by peer", "TLS established", "TLS handshake failed", "read timed out", "hanging", "fault: disconnect" and "handler failed".
+<<<
+VERIFIED_BY: >>>
+- FaultTests.DisconnectAfter_ResetsMidMessage
+- RobustnessTests.PeerResetDuringAWrite_IsRecordedAsAReset
+- ProtocolTests.ImplicitTls_WithSelfSignedCertificate
+- RobustnessTests.FailedTlsHandshake_IsAnEvent_NotAHandlerError
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-004
+STATUS: Active
+TITLE: IsClosed
+STATEMENT: >>>
+``ConnectionTranscript.IsClosed`` shall become true once either side closes or resets the connection, and stay false while it is open.
+<<<
+VERIFIED_BY: >>>
+- RobustnessTests.Hang_IgnoresReadTimeout
+- TcpServerTests.ClientReset_IsRecordedButNotAnError
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-005
+STATUS: Active
+TITLE: Byte recording can be turned off
+STATEMENT: >>>
+With ``ServerOptions.RecordTranscript`` false, sent and received bytes shall not be stored; events and messages shall still be recorded and ``Log`` shall still be called.
+<<<
+VERIFIED_BY: >>>
+- MessageTranscriptTests.Messages_AreRecorded_EvenWithByteRecordingOff
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-006
+STATUS: Active
+TITLE: Lines
+STATEMENT: >>>
+``ReceivedLines`` and ``SentLines`` shall list complete LF- or CRLF-terminated lines with the terminator removed; once the connection is closed a trailing unterminated line shall be included too. On ``ServerTranscript`` they shall concatenate all connections' lines in connection order.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadmeExample_RepliesOnEphemeralPort
+- TcpServerTests.Concurrent_HandlesClientsInParallel
+- ConfigClientTests.rule table: GET of a known and an unknown key
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-007
+STATUS: Active
+TITLE: Decoded messages
+STATEMENT: >>>
+``RecordMessage(direction, message)`` shall record a decoded protocol message, kept apart from raw bytes and lines and listed by ``ReceivedMessages`` and ``SentMessages``; ``TranscriptDirection.Event`` shall record an event instead.
+<<<
+VERIFIED_BY: >>>
+- MessageTranscriptTests.Messages_AreKeptApartFromBytes_AndAssertable
+- Hl7MllpExample.Messages_AreAcknowledged_OnOneConnection
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-008
+STATUS: Active
+TITLE: Line assertions
+STATEMENT: >>>
+``HasReceivedLine`` and ``HasSentLine`` shall report whether any line matches; ``AssertReceivedLine``, ``AssertNotReceivedLine`` and ``AssertSentLine`` shall throw ``TranscriptAssertionException`` when the expectation fails.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.ReadmeExample_RepliesOnEphemeralPort
+- TcpServerTests.FailedAssertion_IncludesTranscript
+- FtpExample.ServerWithoutTls_IsRefused_NotDowngraded
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-009
+STATUS: Active
+TITLE: In-order assertions
+STATEMENT: >>>
+``AssertReceivedLinesInOrder``, ``AssertSentLinesInOrder`` and ``AssertReceivedMessagesInOrder`` shall pass when the matchers match lines (or messages) in that order, other entries allowed between them, and otherwise fail naming the first matcher not found.
+<<<
+VERIFIED_BY: >>>
+- ProtocolTests.Conversation_ScriptsAnSmtpSession
+- InstrumentExample.IdentifiesAndMeasures
+- MessageTranscriptTests.Messages_AreKeptApartFromBytes_AndAssertable
+<<<
+COMMENT: >>>
+``AssertSentLinesInOrder`` has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-010
+STATUS: Active
+TITLE: Message assertions
+STATEMENT: >>>
+``HasReceivedMessage``, ``HasSentMessage``, ``AssertReceivedMessage``, ``AssertNotReceivedMessage`` and ``AssertSentMessage`` shall behave as the line assertions, over decoded messages.
+<<<
+VERIFIED_BY: >>>
+- MessageTranscriptTests.Messages_AreKeptApartFromBytes_AndAssertable
+- MessageTranscriptTests.FailedMessageAssertion_ShowsTheMessagesInTheDump
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-011
+STATUS: Active
+TITLE: Text assertion
+STATEMENT: >>>
+``AssertReceived(text)`` shall pass when the received text contains ``text`` (ordinal), regardless of line structure.
+<<<
+VERIFIED_BY: >>>
+- SmtpExample.SendsWelcomeMail
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-012
+STATUS: Active
+TITLE: Failures include the transcript
+STATEMENT: >>>
+A failed transcript assertion shall throw ``TranscriptAssertionException`` whose message states the expectation and contains the full transcript dump, or "Transcript is empty.".
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.FailedAssertion_IncludesTranscript
+- MessageTranscriptTests.FailedMessageAssertion_ShowsTheMessagesInTheDump
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-013
+STATUS: Active
+TITLE: Wait helpers
+STATEMENT: >>>
+``WaitForReceivedLineAsync``, ``WaitForSentLineAsync``, ``WaitForReceivedMessageAsync``, ``WaitForSentMessageAsync`` and ``WaitUntilAsync(condition, description)`` shall complete as soon as the condition holds, re-checking whenever anything is recorded rather than polling, with a default timeout of 5 seconds.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Stream_CanBeUsedWithStandardReaders
+- TcpServerTests.Concurrent_HandlesClientsInParallel
+- MessageTranscriptTests.Messages_AreKeptApartFromBytes_AndAssertable
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-014
+STATUS: Active
+TITLE: Wait timeout and cancellation
+STATEMENT: >>>
+A wait that times out shall throw ``TimeoutException`` naming what was awaited and including the transcript dump; cancelling the caller's token shall end the wait with ``OperationCanceledException``.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.WaitFor_TimesOutWithTranscript
+<<<
+COMMENT: >>>
+The cancellation case has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-015
+STATUS: Active
+TITLE: Connection-count waits
+STATEMENT: >>>
+``WaitForConnectionsAsync(n)`` shall wait until at least ``n`` connections have been accepted; ``WaitForClosedConnectionsAsync(n)`` until at least ``n`` have been accepted and all accepted connections are closed; ``ConnectionTranscript.WaitForCloseAsync`` until that connection is closed.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Dispose_StopsPromptlyEvenWithBlockedHandlers
+- TcpServerTests.ReadmeExample_RepliesOnEphemeralPort
+- SmtpServerTests.Intercept_421_ClosesTheConnection
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-016
+STATUS: Active
+TITLE: Readable dump
+STATEMENT: >>>
+``ToString`` of a transcript shall print one line per protocol line, prefixed ``#id <-`` (received) or ``#id ->`` (sent), merging chunks split across reads and escaping control characters; events as ``#id --``; messages as ``#id <=`` or ``#id =>``; and mark a trailing partial line "(no newline)".
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Transcript_ToString_IsReadable
+- MessageTranscriptTests.Messages_AreKeptApartFromBytes_AndAssertable
+- MemcachedExample.SetThenGet_GoldenTranscript
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-017
+STATUS: Active
+TITLE: Live log
+STATEMENT: >>>
+When ``ServerOptions.Log`` is set it shall receive each recorded chunk (``#id <- escaped text``), event and message as it is recorded, and before it becomes visible in the transcript.
+<<<
+VERIFIED_BY: >>>
+- TcpServerTests.Log_ReceivesLiveTraffic
+- MessageTranscriptTests.Messages_AreRecorded_EvenWithByteRecordingOff
+<<<
+
+[REQUIREMENT]
+UID: ITS-TR-018
+STATUS: Deferred
+TITLE: Cap on transcript growth
+STATEMENT: >>>
+A server should be able to bound the memory its transcript uses, for example by keeping only the most recent traffic, so a long-running stub does not grow without limit.
+<<<
+RATIONALE: >>>
+Transcripts currently keep every byte for the server's lifetime, which is right for short tests. Bounding them changes what assertions and dumps can rely on, so it is a design change left for later; ``RecordTranscript = false`` is the current workaround.
+<<<
+RELATIONS:
+- TYPE: Parent
+  VALUE: ITS-TR-002
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: UDP server
+
+[REQUIREMENT]
+UID: ITS-UDP-001
+STATUS: Active
+TITLE: Listening
+STATEMENT: >>>
+``UdpServer.Listen(port, handler, options)`` shall bind ``127.0.0.1`` (port 0 picking a free port) and ``Listen(IPEndPoint, ...)`` the given endpoint, and start receiving before returning; ``EndPoint`` and ``Port`` shall report the bound address.
+<<<
+VERIFIED_BY: >>>
+- UdpServerTests.Replies_ToEachDatagram
+- DnsExample.ResolvesARecords_OverUdp
+<<<
+
+[REQUIREMENT]
+UID: ITS-UDP-002
+STATUS: Active
+TITLE: Host
+STATEMENT: >>>
+``UdpServer.Host`` shall map a wildcard bind to the matching loopback address, as ``TcpServer.Host`` does.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/UdpServer.cs (Host)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-UDP-003
+STATUS: Active
+TITLE: Datagrams and replies
+STATEMENT: >>>
+The handler shall receive each datagram as a ``Datagram`` with ``Data``, ``Text`` (decoded with ``UdpServerOptions.Encoding``), ``RemoteEndPoint`` and a ``CancellationToken`` cancelled on stop; ``ReplyAsync`` shall send bytes or text back to the sender, and ``UdpServer.SendAsync`` may send to any endpoint. Sent datagrams shall be recorded.
+<<<
+VERIFIED_BY: >>>
+- UdpServerTests.Replies_ToEachDatagram
+- DnsExample.SpoofedReplyWithTheWrongId_IsIgnored
+<<<
+
+[REQUIREMENT]
+UID: ITS-UDP-004
+STATUS: Active
+TITLE: Reply delay
+STATEMENT: >>>
+``UdpServerOptions.ReplyDelay`` shall delay every reply and ``SendAsync`` by that amount.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/UdpServer.cs (SendAsync)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-UDP-005
+STATUS: Active
+TITLE: Handler concurrency
+STATEMENT: >>>
+Handlers shall run one at a time in arrival order by default; ``MaxConcurrency = n`` shall allow up to ``n`` at once. A ``MaxConcurrency`` below 1 shall throw ``ArgumentOutOfRangeException``.
+<<<
+VERIFIED_BY: >>>
+- UdpServerTests.Replies_ToEachDatagram
+<<<
+COMMENT: >>>
+Only the default (sequential) mode is exercised; parallel handling and validation have no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-UDP-006
+STATUS: Active
+TITLE: Reproducible packet loss
+STATEMENT: >>>
+``DropRate`` shall silently drop that fraction of incoming datagrams, chosen by a generator seeded with ``Seed`` so the same traffic loses the same datagrams on every run. Dropped datagrams shall be recorded with ``Dropped`` true and excluded from ``Received``. A ``DropRate`` outside 0 to 1 shall throw ``ArgumentOutOfRangeException``.
+<<<
+VERIFIED_BY: >>>
+- UdpServerTests.DropRate_LosesDatagramsReproducibly
+- UdpTelemetryExample.Metrics_TolerateHeavyPacketLoss
+- DnsExample.PacketLoss_IsRiddenOutWithRetries
+<<<
+
+[REQUIREMENT]
+UID: ITS-UDP-007
+STATUS: Active
+TITLE: UDP transcript
+STATEMENT: >>>
+``UdpTranscript`` shall expose ``Records``, ``Received``, ``Sent``, ``ReceivedTexts`` and ``SentTexts``; ``AssertReceived(matcher)`` shall fail with ``TranscriptAssertionException`` including the transcript; ``WaitForReceivedAsync``, ``WaitForSentAsync`` and ``WaitUntilAsync`` shall wait as the stream transcript waits do.
+<<<
+VERIFIED_BY: >>>
+- UdpServerTests.Replies_ToEachDatagram
+- UdpTelemetryExample.Metrics_AreWellFormed
+- UdpTelemetryExample.Syslog_UsesRfc5424Format
+<<<
+
+[REQUIREMENT]
+UID: ITS-UDP-008
+STATUS: Active
+TITLE: UDP handler errors
+STATEMENT: >>>
+An exception from a UDP handler shall be added to ``UdpServer.Errors``, logged, and not stop the server; ``ThrowIfFaulted`` shall throw an ``AggregateException`` of them.
+<<<
+VERIFIED_BY: >>>
+- UdpServerTests.HandlerErrors_AreCaptured
+<<<
+
+[REQUIREMENT]
+UID: ITS-UDP-009
+STATUS: Active
+TITLE: Oversized datagrams
+STATEMENT: >>>
+The receive buffer shall be ``MaxDatagramSize`` bytes (default 65,527). Where the OS reports a larger datagram as an error (Windows) it shall be discarded and logged as "datagram larger than MaxDatagramSize"; where the OS truncates it silently (Unix) the truncated datagram shall be delivered.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/UdpServer.cs (ReceiveLoopAsync)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-UDP-010
+STATUS: Active
+TITLE: Receive loop survives ICMP errors
+STATEMENT: >>>
+An ICMP "port unreachable" caused by replying to a vanished client shall not stop the receive loop (on Windows ``SIO_UDP_CONNRESET`` shall be disabled; other receive errors shall be skipped).
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/UdpServer.cs (Listen, ReceiveLoopAsync)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-UDP-011
+STATUS: Active
+TITLE: UDP stop
+STATEMENT: >>>
+``StopAsync`` and ``DisposeAsync`` shall cancel every ``Datagram.CancellationToken``, close the socket, skip datagrams queued but not yet dispatched, ignore handler exceptions raised during the stop, and wait at most ``ShutdownTimeout`` for running handlers. Repeated calls shall return the same stop operation.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/UdpServer.cs (StopCoreAsync, DispatchLoopAsync)
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[[/SECTION]]

@@ -1,0 +1,1419 @@
+[DOCUMENT]
+TITLE: Intertube.Stub SFTP server requirements
+OPTIONS:
+  VIEW_STYLE: Table
+
+[GRAMMAR]
+IMPORT_FROM_FILE: intertube.sgra
+
+[TEXT]
+STATEMENT: >>>
+This document specifies the embedded SFTP server of Intertube.Stub: the public ``SftpServer`` API and its lifecycle, the SSH key types (``SshKeyPair``, ``SshPublicKey``), the server side of the SSH transport, user authentication and connection protocols (RFC 4253, RFC 4252, RFC 4254), the SFTP version 3 subsystem with the OpenSSH extensions it supports, and the two bundled file systems (``InMemorySftpFileSystem`` and ``DirectorySftpFileSystem``). The source is ``src/Intertube.Stub/Sftp/``. The server is a test double: it does not aim to be a production SSH server, but it does perform real cryptography so that unmodified clients (OpenSSH ``sftp``, SSH.NET) can talk to it.
+
+The words "shall", "should" and "may" carry the meaning given in RFC 2119. UIDs use the areas SFTP (server API and SFTP protocol), SSH (keys, transport, authentication and channels) and SFS (file systems).
+
+VERIFIED_BY lists the automated tests that exercise a requirement, as ``TypeName.MemberName`` of a test class in ``tests/Intertube.Stub.Tests/Sftp`` or ``examples/Intertube.Stub.Examples``. Many of these tests drive the real OpenSSH ``sftp`` client (``OpenSshSftpTests``) or SSH.NET (``SftpExample``), so a test may cover a behaviour end to end rather than in isolation. A line of the form "Review: <file>" means no automated test covers the requirement and it was checked by reading the named source file; such requirements also carry the comment "No automated test."
+<<<
+
+[[SECTION]]
+TITLE: Server API and lifecycle
+
+[REQUIREMENT]
+UID: ITS-SFTP-001
+STATUS: Active
+TITLE: Start on an ephemeral loopback port
+STATEMENT: >>>
+``SftpServer.Start(SftpServerOptions?)`` shall start listening immediately, on ``SftpServerOptions.Address`` (default IPv4 loopback) and ``SftpServerOptions.Port`` (default 0, meaning a free port chosen by the system), and shall expose the bound address through ``Host`` and ``Port`` and the underlying TCP server through ``Tcp``.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-002
+STATUS: Active
+TITLE: Directory-serving shortcut
+STATEMENT: >>>
+``SftpServer.Start(string rootDirectory, params SftpUser[] users)`` shall start a server whose ``FileSystem`` is a ``DirectorySftpFileSystem`` rooted at ``rootDirectory`` and whose ``Users`` are ``users``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/SftpServer.cs
+<<<
+COMMENT: >>>
+No automated test. The tests construct ``DirectorySftpFileSystem`` explicitly through ``SftpServerOptions``.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-003
+STATUS: Active
+TITLE: Default file system
+STATEMENT: >>>
+When ``SftpServerOptions.FileSystem`` is null, the server shall serve a new, empty ``InMemorySftpFileSystem``, available through ``SftpServer.FileSystem``.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.UnknownUser_IsRejected
+- OpenSshSftpTests.RsaHostKey_IsAccepted
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-004
+STATUS: Active
+TITLE: Default and supplied host key
+STATEMENT: >>>
+When ``SftpServerOptions.HostKey`` is null, the server shall generate a fresh ECDSA P-256 host key for that server instance and dispose it when the server is disposed. A supplied ``HostKey`` shall be used as given and shall not be disposed by the server.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.RsaHostKey_IsAccepted
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-005
+STATUS: Active
+TITLE: Host key pinning helpers
+STATEMENT: >>>
+``SftpServer.HostKey`` shall return the public host key, and ``SftpServer.KnownHostsLine`` shall return an OpenSSH ``known_hosts`` line of the form ``[host]:port algorithm base64`` that the OpenSSH client accepts with ``StrictHostKeyChecking=yes``.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- OpenSshSftpTests.PinnedHostKey_Mismatch_IsRefusedByTheClient
+- SftpExample.ImpostorHost_IsRefusedBeforeAnyCredentialsAreSent
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-006
+STATUS: Active
+TITLE: Cipher and MAC offer is configurable
+STATEMENT: >>>
+The server shall offer exactly ``SftpServerOptions.Ciphers`` (default: all supported ciphers) and ``SftpServerOptions.Macs`` (default: all supported MACs) in that preference order. ``Start`` shall throw if ``Ciphers`` names a cipher the server does not implement.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/SftpServer.cs
+<<<
+COMMENT: >>>
+No automated test. Restricting the offer is not exercised; the cipher matrix test restricts the client instead. Unknown MAC names are not validated at start-up (see the final report).
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-007
+STATUS: Active
+TITLE: Transcript off by default
+STATEMENT: >>>
+``SftpServerOptions.Server`` shall default to ``ServerOptions`` with ``RecordTranscript`` set to false, since the raw traffic is encrypted; any other TCP-level options given there (faults, logging, concurrency) shall apply to the SSH connections.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.LargeTransfer_SurvivesRekeyingAndFragmentation
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-008
+STATUS: Active
+TITLE: Decoded transcript entries
+STATEMENT: >>>
+When the transcript is recorded, each connection's transcript shall contain an event naming the client version and the negotiated key exchange, cipher and (for non-AEAD ciphers) MAC; one received entry per login attempt (``AUTH method user=... [key=...] accepted|rejected``); one received entry per SFTP request in the form of ``SftpRequest.ToString()``; one sent entry per SFTP reply (for example ``STATUS Failure message``, ``HANDLE id``, ``DATA n bytes``, ``NAME n entries``, ``ATTRS``); and a sent ``DISCONNECT reason`` entry when the server hangs up for a protocol error.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- OpenSshSftpTests.FailNext_FailsOneUpload_ThenTheRetrySucceeds
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-009
+STATUS: Active
+TITLE: Request log
+STATEMENT: >>>
+Every SFTP request that reaches the request gate shall be appended to ``SftpServer.Requests`` in arrival order as an ``SftpRequest`` carrying the ``SftpOperation``, the normalised absolute path (for handle operations, the path the handle was opened with), the authenticated user, the ``Connection``, and where applicable ``TargetPath`` (rename), ``Offset`` and ``Length`` (read and write) and ``OpenFlags`` (open).
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+- SftpExample.FailedWrite_IsRetriedOnANewConnection
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-010
+STATUS: Active
+TITLE: Querying and waiting for requests
+STATEMENT: >>>
+``RequestsOf(operation, path)`` shall return the recorded requests of that operation whose path matches the optional glob (``*``, ``?``). ``WaitForRequestAsync`` shall complete with the first recorded request matching the predicate (or operation and glob), waiting for one to arrive, and shall fail after the optional timeout listing the requests received so far.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- OpenSshSftpTests.FailNext_FailsOneUpload_ThenTheRetrySucceeds
+<<<
+COMMENT: >>>
+``WaitForRequestAsync`` itself is not exercised by these tests; ``RequestsOf`` is.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-011
+STATUS: Active
+TITLE: Login log
+STATEMENT: >>>
+``SftpServer.AuthAttempts`` shall list, in order, every decided login attempt as an ``SshAuthAttempt`` with the user name, method, outcome, the SHA-256 fingerprint of the offered key for public-key attempts, and the connection id.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- SftpExample.UnknownKey_FailsAuthentication
+- SftpExample.PasswordLogin_WithSshNet
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-012
+STATUS: Active
+TITLE: FailNext
+STATEMENT: >>>
+``FailNext(operation, path, status, times)`` shall answer the next ``times`` requests of that operation whose path matches the optional glob with an SFTP STATUS of ``status`` (default ``Failure``) and the message "Injected failure: <status>." instead of carrying them out; subsequent matching requests shall proceed normally. ``times`` less than 1 shall throw ``ArgumentOutOfRangeException``.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.FailNext_FailsOneUpload_ThenTheRetrySucceeds
+- SftpExample.FailedWrite_IsRetriedOnANewConnection
+- SftpExample.CollectInbox_DeleteFailure_KeepsTheFile
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-013
+STATUS: Active
+TITLE: FailAlways
+STATEMENT: >>>
+``FailAlways(operation, path, status)`` shall answer every subsequent matching request with ``status`` (default ``PermissionDenied``) instead of carrying it out.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PermissionDenied_FromFailAlways_IsReportedPerFile
+- SftpExample.PermissionDenied_IsNotRetried
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-014
+STATUS: Active
+TITLE: Intercept hook
+STATEMENT: >>>
+Before carrying out each recorded request that no failure rule has answered, the server shall await ``SftpServer.Intercept`` if set; a non-null result shall be sent as the request's STATUS instead of doing the work, and null shall let the request proceed. Failure rules registered with ``FailNext`` or ``FailAlways`` shall take precedence over ``Intercept``.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.SlowServer_InterceptCanDelayRequests
+- SftpExample.HungServer_HitsTheOperationTimeout
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-015
+STATUS: Active
+TITLE: Interceptor can delay or cut a connection
+STATEMENT: >>>
+An interceptor that delays shall delay the reply to that request (and, because requests on a channel are handled in order, the requests behind it). If the interceptor aborts ``SftpRequest.Connection``, the server shall not carry out that request or any already-buffered request on the connection, and shall not record a server error.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.SlowServer_InterceptCanDelayRequests
+- OpenSshSftpTests.ConnectionDroppedMidUpload_ClientFails_ServerStaysHealthy
+- SftpExample.ConnectionCutMidUpload_IsRetried_AndLeavesNoFinalFileBehind
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-016
+STATUS: Active
+TITLE: Server errors
+STATEMENT: >>>
+``SftpServer.Errors`` shall list exceptions from connection handlers that indicate an SSH protocol violation (disconnect reason PROTOCOL_ERROR) or a server bug, and ``ThrowIfFaulted`` shall throw when that list is not empty. Failed key exchange, MAC failures, unavailable services, exhausted authentication attempts and clients that disconnect shall not be recorded as errors.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.ConnectionDroppedMidUpload_ClientFails_ServerStaysHealthy
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-017
+STATUS: Active
+TITLE: Stop and dispose
+STATEMENT: >>>
+``StopAsync`` shall stop the underlying TCP server and ``DisposeAsync`` shall do the same and release the server-generated host key. ``ToString`` shall return ``sftp://host:port``.
+<<<
+VERIFIED_BY: >>>
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: SSH keys
+
+[REQUIREMENT]
+UID: ITS-SSH-001
+STATUS: Active
+TITLE: Key pair generation
+STATEMENT: >>>
+``SshKeyPair.CreateEcdsa(bits)`` shall create an ECDSA key on NIST P-256, P-384 or P-521 for ``bits`` 256 (default), 384 or 521 and throw ``ArgumentOutOfRangeException`` for any other value. ``SshKeyPair.CreateRsa(bits)`` shall create an RSA key (default 3072 bits). ``SshKeyPair.FromKey`` shall accept an ``ECDsa`` or ``RSA`` instance and throw ``ArgumentException`` for any other key type.
+<<<
+VERIFIED_BY: >>>
+- SshCryptoTests.KeyPair_SignaturesVerifyThroughTheParsedPublicKey
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-002
+STATUS: Active
+TITLE: Private key export for clients
+STATEMENT: >>>
+``SshKeyPair.PrivateKeyPem`` shall return the private key as SEC 1 ``EC PRIVATE KEY`` or PKCS #1 ``RSA PRIVATE KEY`` PEM, and ``WritePrivateKey(path)`` shall write it with LF line endings and, on Unix, with mode 0600, so that the OpenSSH client accepts it as an identity.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.EcdsaIdentity_MadeWithoutSshKeygen
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-003
+STATUS: Active
+TITLE: Public key parsing
+STATEMENT: >>>
+``SshPublicKey.Parse`` shall accept an OpenSSH ``type base64 [comment]`` line and shall throw ``FormatException`` when the line has fewer than two fields, the key is not valid base64, the blob is malformed, or the declared type differs from the type inside the blob. ``SshPublicKey.Load`` shall parse the first non-blank, non-comment line of a file.
+<<<
+VERIFIED_BY: >>>
+- SshCryptoTests.PublicKeyParse_RejectsMismatchedTypeAndGarbage
+- SshCryptoTests.KeyPair_SignaturesVerifyThroughTheParsedPublicKey
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-004
+STATUS: Active
+TITLE: Public key identity and fingerprint
+STATEMENT: >>>
+Two ``SshPublicKey`` values shall be equal when their wire-format blobs are equal, regardless of comment. ``Fingerprint`` shall be ``SHA256:`` followed by the unpadded base64 SHA-256 of the blob, as ``ssh-keygen -l`` prints it, and ``ToString`` shall return the OpenSSH one-line form.
+<<<
+VERIFIED_BY: >>>
+- SshCryptoTests.KeyPair_SignaturesVerifyThroughTheParsedPublicKey
+- SftpExample.ImpostorHost_IsRefusedBeforeAnyCredentialsAreSent
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-005
+STATUS: Active
+TITLE: Verifiable client key types
+STATEMENT: >>>
+The server shall verify user signatures made with ssh-ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521 and ssh-rsa keys. An RSA key shall verify signatures of type rsa-sha2-256, rsa-sha2-512 or ssh-rsa (SHA-1); every other key type shall verify only signatures of its own type. Keys of any other type shall never verify.
+<<<
+VERIFIED_BY: >>>
+- SshCryptoTests.KeyPair_SignaturesVerifyThroughTheParsedPublicKey
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- OpenSshSftpTests.EcdsaIdentity_MadeWithoutSshKeygen
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-006
+STATUS: Active
+TITLE: Ed25519 verification
+STATEMENT: >>>
+Ed25519 signatures shall be verified as RFC 8032 section 5.1.7 specifies: a 32-byte key and 64-byte signature are required, points that do not decode and scalars S not below the group order L shall be rejected, and any change to the key, message or signature shall make verification fail.
+<<<
+VERIFIED_BY: >>>
+- SshCryptoTests.Ed25519_AcceptsRfc8032Vectors_AndRejectsAnyFlippedBit
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-007
+STATUS: Active
+TITLE: Strict ECDSA signature encoding
+STATEMENT: >>>
+An ECDSA signature shall be rejected unless r and s are positive, minimally encoded mpints no longer than the curve size and nothing follows them in the signature blob.
+<<<
+VERIFIED_BY: >>>
+- SshCryptoTests.EcdsaVerify_RejectsReencodedOrPaddedSignatures
+- SshCryptoTests.UnsignedFixed_RejectsAnythingButAMinimalPositiveMpint
+- SshCryptoTests.UnsignedFixed_AcceptsMinimalEncodings
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-008
+STATUS: Active
+TITLE: Signature algorithm bound to the declared algorithm
+STATEMENT: >>>
+A signature blob shall verify only if the algorithm name inside it equals the algorithm the request declared (RFC 8332 section 3.2), the key supports that algorithm, and no bytes follow the signature in the blob.
+<<<
+VERIFIED_BY: >>>
+- SshCryptoTests.KeyPair_SignaturesVerifyThroughTheParsedPublicKey
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-009
+STATUS: Active
+TITLE: Host key signature algorithms
+STATEMENT: >>>
+An ECDSA host key shall be offered and used only with its ``ecdsa-sha2-<curve>`` algorithm. An RSA host key shall be offered as rsa-sha2-512 and rsa-sha2-256, in that order, and never as SHA-1 ssh-rsa. Ed25519 host keys are not supported.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.RsaHostKey_IsAccepted
+- SshCryptoTests.KeyPair_SignaturesVerifyThroughTheParsedPublicKey
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: SSH transport
+
+[REQUIREMENT]
+UID: ITS-SSH-010
+STATUS: Active
+TITLE: Version exchange
+STATEMENT: >>>
+On connect the server shall send ``SSH-2.0-Intertube.Stub_0.1`` followed by CR LF. It shall accept a client identification line starting with ``SSH-2.0-`` or ``SSH-1.99-``, skipping up to 21 non-version lines before it, and shall disconnect with PROTOCOL_ERROR for any other ``SSH-`` version or when no version line arrives within those lines.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+COMMENT: >>>
+Only the success path is exercised; the rejection of other versions and the line limit have no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-011
+STATUS: Active
+TITLE: Key exchange algorithms
+STATEMENT: >>>
+The server shall support the key exchange methods ecdh-sha2-nistp256, ecdh-sha2-nistp384 and ecdh-sha2-nistp521 (RFC 5656), preferring them in that order, with the exchange hash and key derivation of RFC 4253 sections 7.2 and 8 using SHA-256, SHA-384 and SHA-512 respectively.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.EveryCipherMacAndKeyExchange_Works
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-012
+STATUS: Active
+TITLE: Ciphers
+STATEMENT: >>>
+The server shall support the ciphers aes128-gcm@openssh.com, aes256-gcm@openssh.com, aes128-ctr, aes192-ctr and aes256-ctr, independently negotiated for each direction. For the AES-GCM ciphers the packet length shall be the associated data, the nonce shall be incremented per packet as OpenSSH defines, and no MAC shall be negotiated.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.EveryCipherMacAndKeyExchange_Works
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-013
+STATUS: Active
+TITLE: MACs
+STATEMENT: >>>
+For the AES-CTR ciphers the server shall support the MACs hmac-sha2-256-etm@openssh.com, hmac-sha2-512-etm@openssh.com (encrypt-then-MAC, length in the clear), hmac-sha2-256 and hmac-sha2-512 (MAC-then-encrypt, RFC 4253 section 6.4), computed over the packet sequence number and the packet.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.EveryCipherMacAndKeyExchange_Works
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-014
+STATUS: Active
+TITLE: Algorithm negotiation
+STATEMENT: >>>
+For each algorithm category the server shall choose the first algorithm in the client's list that the server also offers, shall offer and accept only the ``none`` compression method, and shall disconnect with KEY_EXCHANGE_FAILED when a category has no common algorithm. Such a failure shall not be recorded as a server error.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.EveryCipherMacAndKeyExchange_Works
+<<<
+COMMENT: >>>
+The no-common-algorithm path has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-015
+STATUS: Active
+TITLE: Guessed first key exchange packet
+STATEMENT: >>>
+When the client's KEXINIT sets first_kex_packet_follows and its first key exchange or host key algorithm is not the negotiated one, the server shall discard the next packet; when the guess was right it shall use that packet as the client's KEX_ECDH_INIT.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshTransport.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-016
+STATUS: Active
+TITLE: Invalid ECDH point
+STATEMENT: >>>
+A client ECDH public value that is not an uncompressed point of the right size on the negotiated curve shall end the connection with DISCONNECT reason KEY_EXCHANGE_FAILED; an unexpected message where KEX_ECDH_INIT or NEWKEYS is required shall do the same.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshTransport.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-017
+STATUS: Active
+TITLE: Strict key exchange
+STATEMENT: >>>
+The server shall advertise ``kex-strict-s-v00@openssh.com`` in its first KEXINIT only. When the client's first KEXINIT contains ``kex-strict-c-v00@openssh.com``, the server shall reset both packet sequence numbers to zero at each NEWKEYS and shall not tolerate IGNORE or DEBUG messages during the key exchange; otherwise it shall skip IGNORE and DEBUG messages there.
+<<<
+RATIONALE: >>>
+Strict key exchange is OpenSSH's countermeasure to the Terrapin prefix-truncation attack; current OpenSSH clients negotiate it whenever the server offers it.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.EveryCipherMacAndKeyExchange_Works
+- OpenSshSftpTests.LargeTransfer_SurvivesRekeyingAndFragmentation
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-018
+STATUS: Active
+TITLE: server-sig-algs extension
+STATEMENT: >>>
+When the client's first KEXINIT contains ``ext-info-c``, the server shall send SSH_MSG_EXT_INFO immediately after the first NEWKEYS with a ``server-sig-algs`` value of ssh-ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521, rsa-sha2-512 and rsa-sha2-256 (RFC 8308).
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+COMMENT: >>>
+Exercised implicitly: OpenSSH sends ext-info-c. The message content is not asserted.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-019
+STATUS: Active
+TITLE: Client-initiated rekeying
+STATEMENT: >>>
+A KEXINIT received after the initial key exchange shall start a new key exchange that keeps the original session identifier; other connection traffic from the server shall wait until it completes. The server does not initiate rekeying itself.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.LargeTransfer_SurvivesRekeyingAndFragmentation
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-020
+STATUS: Active
+TITLE: Packet length validation
+STATEMENT: >>>
+The server shall reject, with DISCONNECT reason PROTOCOL_ERROR, any received packet whose length is below 5, above 262208 bytes (256 KiB + 64), or not aligned to the cipher block size (8 before keys, 16 after; the length field is excluded from alignment for AEAD and encrypt-then-MAC modes).
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/PacketCipher.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-021
+STATUS: Active
+TITLE: Padding validation
+STATEMENT: >>>
+The server shall reject, with DISCONNECT reason PROTOCOL_ERROR, a packet whose padding length is below 4 or not less than the packet length, and a packet with an empty payload. Packets the server sends shall carry 4 or more bytes of random padding and be block aligned.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/PacketCipher.cs
+<<<
+COMMENT: >>>
+No automated test of the rejection; sending is covered by every OpenSSH interop test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-022
+STATUS: Active
+TITLE: MAC and tag validation
+STATEMENT: >>>
+A packet whose HMAC (compared in constant time) or AES-GCM tag does not verify shall end the connection with DISCONNECT reason MAC_ERROR, and shall not be recorded as a server error.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/PacketCipher.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-023
+STATUS: Active
+TITLE: Malformed messages disconnect
+STATEMENT: >>>
+Any SSH message whose fields overrun the message (for example a string length beyond the end) shall end the connection with DISCONNECT reason PROTOCOL_ERROR and be recorded in ``SftpServer.Errors``.
+<<<
+VERIFIED_BY: >>>
+- SshCryptoTests.SshReader_StringLongerThanTheMessage_IsAProtocolError
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-024
+STATUS: Active
+TITLE: Transport messages from the client
+STATEMENT: >>>
+Outside a key exchange the server shall silently skip IGNORE, DEBUG and UNIMPLEMENTED messages, shall end the session without error on DISCONNECT or end of stream, and shall disconnect with PROTOCOL_ERROR on key exchange messages 21 to 49 outside a key exchange.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshTransport.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-025
+STATUS: Active
+TITLE: UNIMPLEMENTED for unknown messages
+STATEMENT: >>>
+After authentication, a message type the server does not handle shall be answered with SSH_MSG_UNIMPLEMENTED carrying that packet's sequence number, recorded as a transcript event, and the connection shall continue.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-026
+STATUS: Active
+TITLE: Only the ssh-userauth service
+STATEMENT: >>>
+After the key exchange the server shall accept a SERVICE_REQUEST for ``ssh-userauth`` with SERVICE_ACCEPT, disconnect with SERVICE_NOT_AVAILABLE for any other service name, and disconnect with PROTOCOL_ERROR if the first message is not a SERVICE_REQUEST.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+COMMENT: >>>
+Only the success path is exercised.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-027
+STATUS: Active
+TITLE: Transport faults survived
+STATEMENT: >>>
+The SSH layer shall reassemble packets regardless of how the TCP stream is fragmented, so transport faults that only delay or split data (for example ``FaultOptions.Fragment``) do not break a session.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.LargeTransfer_SurvivesRekeyingAndFragmentation
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: User authentication
+
+[REQUIREMENT]
+UID: ITS-SSH-028
+STATUS: Active
+TITLE: Open server when no users are configured
+STATEMENT: >>>
+When ``SftpServerOptions.Users`` is empty, the server shall accept any user name with any password, or with any public key whose signature verifies.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshSession.cs
+<<<
+COMMENT: >>>
+No automated test. Every test configures at least one user.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-029
+STATUS: Active
+TITLE: Password authentication
+STATEMENT: >>>
+When users are configured, a password request shall succeed only if a ``SftpUser`` with that exact name has a non-null ``Password`` equal to the one sent, and the requested service is ``ssh-connection``. ``SftpUser.WithPassword`` shall create such a user.
+<<<
+VERIFIED_BY: >>>
+- SftpExample.PasswordLogin_WithSshNet
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-030
+STATUS: Active
+TITLE: Public key authentication
+STATEMENT: >>>
+When users are configured, a signed public-key request shall succeed only if a ``SftpUser`` with that name lists the key in ``AuthorizedKeys``, the requested service is ``ssh-connection``, and the signature verifies over the session identifier and request fields defined in RFC 4252 section 7 using the algorithm declared in the request. ``SftpUser.WithKey`` shall accept ``SshPublicKey`` values or an OpenSSH public key line.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- OpenSshSftpTests.EcdsaIdentity_MadeWithoutSshKeygen
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-031
+STATUS: Active
+TITLE: Wrong user or key rejected
+STATEMENT: >>>
+A login with an unknown user name or with a key not authorised for that user shall be refused with USERAUTH_FAILURE and recorded in ``AuthAttempts`` as not succeeded (with the key fingerprint for public-key attempts), and no SFTP request shall be served.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.UnknownUser_IsRejected
+- OpenSshSftpTests.UnauthorizedKey_IsRejected
+- SftpExample.UnknownKey_FailsAuthentication
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-032
+STATUS: Active
+TITLE: PK_OK only for verifiable, authorised keys
+STATEMENT: >>>
+An unsigned public-key query shall be answered with SSH_MSG_USERAUTH_PK_OK, echoing the algorithm and key, only when the key is allowed for the user and the server can verify signatures of the declared algorithm with that key type; it shall not be recorded in ``AuthAttempts``. Otherwise the query shall be recorded as a failed attempt and answered with USERAUTH_FAILURE.
+<<<
+RATIONALE: >>>
+Answering PK_OK for a key the server cannot verify would make the client sign and then fail, hiding the real cause and wasting an attempt.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- OpenSshSftpTests.UnauthorizedKey_IsRejected
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-033
+STATUS: Active
+TITLE: Failure reply lists methods
+STATEMENT: >>>
+Every refused authentication request, including the ``none`` method and unknown methods, shall be answered with USERAUTH_FAILURE listing ``publickey,password`` with partial success false. Requests with unknown methods shall be recorded as failed attempts; ``none`` requests shall not be recorded.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.UnknownUser_IsRejected
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-034
+STATUS: Active
+TITLE: Authentication attempt limit
+STATEMENT: >>>
+After 20 authentication requests without success (counting public-key queries) the server shall disconnect with reason NO_MORE_AUTH_METHODS_AVAILABLE, without recording a server error. A message other than USERAUTH_REQUEST during authentication shall cause DISCONNECT with PROTOCOL_ERROR.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-035
+STATUS: Active
+TITLE: Malformed key blob in a request
+STATEMENT: >>>
+A public-key request whose key blob cannot be parsed shall be refused with USERAUTH_FAILURE rather than ending the connection.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Connection protocol and channels
+
+[REQUIREMENT]
+UID: ITS-SSH-036
+STATUS: Active
+TITLE: Session channels only
+STATEMENT: >>>
+A CHANNEL_OPEN of type ``session`` shall be confirmed with an initial window of 2 MiB and a maximum packet size of 32 KiB. Any other channel type shall be refused with CHANNEL_OPEN_FAILURE reason SSH_OPEN_UNKNOWN_CHANNEL_TYPE (3), and a session request with a maximum packet size of 0 with reason SSH_OPEN_ADMINISTRATIVELY_PROHIBITED (1).
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+COMMENT: >>>
+The refusal paths have no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-037
+STATUS: Active
+TITLE: sftp subsystem only
+STATEMENT: >>>
+A ``subsystem`` channel request naming ``sftp`` on a channel that has not started a subsystem shall start an SFTP session on that channel and, if a reply is wanted, be answered with CHANNEL_SUCCESS. Every other channel request (shell, exec, pty-req, env, a second subsystem, and so on) shall be answered with CHANNEL_FAILURE when a reply is wanted and recorded as a transcript event.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+COMMENT: >>>
+The refusal path has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-038
+STATUS: Active
+TITLE: Global requests refused
+STATEMENT: >>>
+A GLOBAL_REQUEST that wants a reply shall be answered with REQUEST_FAILURE; one that does not shall be ignored.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshSession.cs
+<<<
+COMMENT: >>>
+No automated test. OpenSSH keepalives (``ServerAliveInterval`` in ConnectionDroppedMidUpload_ClientFails_ServerStaysHealthy) may send one, but the reply is not asserted.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-039
+STATUS: Active
+TITLE: Several channels per connection
+STATEMENT: >>>
+The server shall allow any number of session channels on one connection, each with its own SFTP session and handle table.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-040
+STATUS: Active
+TITLE: Inbound window enforcement
+STATEMENT: >>>
+Channel data (including extended data, which is discarded) that exceeds the window the server granted shall end the connection with DISCONNECT reason PROTOCOL_ERROR. The server shall send CHANNEL_WINDOW_ADJUST once the SFTP session has consumed at least half the window, crediting the window before sending the adjustment.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.LargeTransfer_SurvivesRekeyingAndFragmentation
+<<<
+COMMENT: >>>
+Window replenishment is exercised by the 4 MB transfer; the overrun rejection has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-041
+STATUS: Active
+TITLE: Inbound maximum packet enforcement
+STATEMENT: >>>
+A CHANNEL_DATA or CHANNEL_EXTENDED_DATA message carrying more than 32 KiB of data shall end the connection with DISCONNECT reason PROTOCOL_ERROR.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-042
+STATUS: Active
+TITLE: Outbound flow control
+STATEMENT: >>>
+Data the server sends on a channel shall be split into chunks no larger than the smaller of the client's maximum packet size and 32 KiB, and shall never exceed the client's window; the sender shall wait for CHANNEL_WINDOW_ADJUST when the window is exhausted.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.LargeTransfer_SurvivesRekeyingAndFragmentation
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-043
+STATUS: Active
+TITLE: Channel messages must target a live channel
+STATEMENT: >>>
+A channel message for an unknown channel number, or CHANNEL_DATA on a channel with no running subsystem or after the client's EOF, shall end the connection with DISCONNECT reason PROTOCOL_ERROR.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SshSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-044
+STATUS: Active
+TITLE: Orderly channel close
+STATEMENT: >>>
+When the SFTP session ends because the client sent EOF, the server shall send an ``exit-status`` request with status 0, then CHANNEL_EOF, then CHANNEL_CLOSE. When the client sends CHANNEL_CLOSE first, the server shall answer with a single CHANNEL_CLOSE. In either case the server shall send nothing on the channel after its CHANNEL_CLOSE (a send lock serialises channel messages).
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+<<<
+
+[REQUIREMENT]
+UID: ITS-SSH-045
+STATUS: Active
+TITLE: Per-session cancellation and channel abort
+STATEMENT: >>>
+Each SFTP session shall run under a cancellation token that is cancelled when the connection ends or is terminated. When the connection ends, the server shall abort every channel (waking senders blocked on the window and ending the session's input), wait for the SFTP sessions to finish, close their open handles, and only then report the first unexpected subsystem fault.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.ConnectionDroppedMidUpload_ClientFails_ServerStaysHealthy
+- SftpExample.HungServer_HitsTheOperationTimeout
+- SftpExample.ConnectionCutMidUpload_IsRetried_AndLeavesNoFinalFileBehind
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: SFTP protocol
+
+[REQUIREMENT]
+UID: ITS-SFTP-018
+STATUS: Active
+TITLE: Version negotiation and extensions
+STATEMENT: >>>
+SSH_FXP_INIT shall be answered with SSH_FXP_VERSION 3 advertising the extensions ``posix-rename@openssh.com``, ``fsync@openssh.com`` and ``limits@openssh.com``, each with version "1". INIT shall not be recorded as a request.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-019
+STATUS: Active
+TITLE: SFTP packet framing
+STATEMENT: >>>
+SFTP packets shall be reassembled from channel data regardless of how they are split. A packet length of 0 or above 263168 bytes (256 KiB + 1024) shall stop the SFTP session and close its channel without recording a server error.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.LargeTransfer_SurvivesRekeyingAndFragmentation
+<<<
+COMMENT: >>>
+The oversize rejection has no automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-020
+STATUS: Active
+TITLE: Malformed request gives BadMessage
+STATEMENT: >>>
+A request whose fields overrun its packet (or a WRITE whose data is shorter than its declared length) shall be answered with SSH_FX_BAD_MESSAGE, using the request id when the packet is long enough to hold one and 0 otherwise, and the session shall continue.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-021
+STATUS: Active
+TITLE: Paths are normalised
+STATEMENT: >>>
+Every path in a request shall be resolved against ``/`` with ``SftpPath.Normalize`` before it is recorded or passed to the file system, so ``..`` can never climb above the root.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PathsOutsideTheRoot_AreClampedToIt
+- SshCryptoTests.SftpPath_NormalizesAndNeverEscapesTheRoot
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-022
+STATUS: Active
+TITLE: OPEN flag semantics
+STATEMENT: >>>
+SSH_FXP_OPEN shall map flags to access and mode as follows: READ and WRITE select read, write or read-write access (read if neither); APPEND adds write access and makes every WRITE go to the end of the file; without CREAT, TRUNC truncates an existing file and otherwise the file must exist; with CREAT, EXCL requires the file not to exist, TRUNC creates or truncates, and neither opens or creates. The reply shall be SSH_FXP_HANDLE.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- SftpExample.ConnectionCutMidUpload_IsRetried_AndLeavesNoFinalFileBehind
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-023
+STATUS: Active
+TITLE: Handle grants only the requested access
+STATEMENT: >>>
+A READ on a handle not opened for reading, or a WRITE on one not opened for writing, shall be answered with SSH_FX_PERMISSION_DENIED, even when creation or truncation required the server to open the underlying file for writing.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-024
+STATUS: Active
+TITLE: Open handle limit
+STATEMENT: >>>
+An OPEN made while 1024 handles are open in the session shall be answered with SSH_FX_FAILURE.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
+<<<
+COMMENT: >>>
+No automated test. OPENDIR does not check the limit.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-025
+STATUS: Active
+TITLE: READ
+STATEMENT: >>>
+SSH_FXP_READ shall return SSH_FXP_DATA with up to the requested length, capped at 255 KiB, from the given offset, and SSH_FX_EOF when the offset is at or beyond the end of the file. The recorded ``Length`` shall be the capped length.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- SftpFileSystemTests.InMemory_EnforcesMaxFileSize_AndReadsPastTheEndAsEof
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-026
+STATUS: Active
+TITLE: WRITE
+STATEMENT: >>>
+SSH_FXP_WRITE shall write the data at the given offset (or at the end for an APPEND handle) and answer SSH_FX_OK; an offset beyond the signed 64-bit range shall be answered with SSH_FX_FAILURE.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- OpenSshSftpTests.LargeTransfer_SurvivesRekeyingAndFragmentation
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-027
+STATUS: Active
+TITLE: CLOSE
+STATEMENT: >>>
+SSH_FXP_CLOSE shall release the handle and its stream and answer SSH_FX_OK. Handles still open when the session ends shall be released too.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-028
+STATUS: Active
+TITLE: Invalid handle
+STATEMENT: >>>
+A request naming a handle that does not exist in the session, or of the wrong kind (a directory handle for READ, WRITE or FSYNC, a file handle for READDIR), shall be answered with SSH_FX_FAILURE and shall not be recorded or offered to failure rules or ``Intercept``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-029
+STATUS: Active
+TITLE: STAT, LSTAT and FSTAT
+STATEMENT: >>>
+SSH_FXP_STAT and SSH_FXP_LSTAT shall return SSH_FXP_ATTRS from the file system (LSTAT does not distinguish links). SSH_FXP_FSTAT shall return the attributes of the handle's path, with the size taken from the open stream for file handles so that unflushed growth is visible.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-030
+STATUS: Active
+TITLE: SETSTAT and FSETSTAT
+STATEMENT: >>>
+SSH_FXP_SETSTAT and SSH_FXP_FSETSTAT shall apply the size, permissions and times present in the request (uid/gid and extended attributes are parsed and ignored) and answer SSH_FX_OK. A size in FSETSTAT on a file handle shall be applied through the open stream.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-031
+STATUS: Active
+TITLE: OPENDIR and READDIR
+STATEMENT: >>>
+SSH_FXP_OPENDIR shall snapshot the directory listing and return a handle, answering SSH_FX_FAILURE if the path is not a directory. Each SSH_FXP_READDIR shall return SSH_FXP_NAME with up to 100 entries (without ``.`` and ``..``) and then SSH_FX_EOF once the listing is exhausted.
+<<<
+VERIFIED_BY: >>>
+- SftpExample.CollectInbox_DownloadsThenDeletes
+- OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-032
+STATUS: Active
+TITLE: Long names
+STATEMENT: >>>
+Each READDIR entry shall carry an ``ls -l`` style long name: type and rwx permission characters from the mode, link count 1, the logged-in user as owner and group, the size and the UTC modification time as ``MMM dd HH:mm``.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-033
+STATUS: Active
+TITLE: REMOVE, MKDIR and RMDIR
+STATEMENT: >>>
+SSH_FXP_REMOVE, SSH_FXP_MKDIR and SSH_FXP_RMDIR shall delete a file, create a directory and delete an empty directory respectively, answering SSH_FX_OK, or the status the file system reports (see the file system requirements).
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+- SftpExample.CollectInbox_DownloadsThenDeletes
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-034
+STATUS: Active
+TITLE: REALPATH
+STATEMENT: >>>
+SSH_FXP_REALPATH shall answer SSH_FXP_NAME with one entry whose name and long name are the normalised path and whose attributes are empty, without checking that the path exists.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-035
+STATUS: Active
+TITLE: RENAME does not overwrite
+STATEMENT: >>>
+SSH_FXP_RENAME shall rename without replacing an existing target, answering SSH_FX_FAILURE when the target exists, and shall be recorded as ``SftpOperation.Rename`` with ``TargetPath``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
+<<<
+COMMENT: >>>
+No automated test. OpenSSH and SSH.NET use posix-rename when the server offers it.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-036
+STATUS: Active
+TITLE: posix-rename extension
+STATEMENT: >>>
+The ``posix-rename@openssh.com`` extended request shall rename, replacing an existing file target, answer SSH_FX_OK, and be recorded as ``SftpOperation.PosixRename`` with ``TargetPath``.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+- SftpExample.ConnectionCutMidUpload_IsRetried_AndLeavesNoFinalFileBehind
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-037
+STATUS: Active
+TITLE: fsync extension
+STATEMENT: >>>
+The ``fsync@openssh.com`` extended request shall flush the file handle's stream, answer SSH_FX_OK, and be recorded as ``SftpOperation.Fsync`` with the handle's path.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-038
+STATUS: Active
+TITLE: limits extension
+STATEMENT: >>>
+The ``limits@openssh.com`` extended request shall be answered with SSH_FXP_EXTENDED_REPLY giving a maximum packet length of 262144, maximum read and write lengths of 261120 (255 KiB), and a maximum of 1024 open handles; it shall be recorded as ``SftpOperation.Extended`` with the extension name as path.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.LargeTransfer_SurvivesRekeyingAndFragmentation
+<<<
+COMMENT: >>>
+Exercised implicitly: OpenSSH queries the limits before transferring. The reply is not asserted.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-039
+STATUS: Active
+TITLE: Unsupported operations
+STATEMENT: >>>
+SSH_FXP_READLINK and SSH_FXP_SYMLINK shall be recorded and answered with SSH_FX_OP_UNSUPPORTED. Any other extended request shall be recorded as ``SftpOperation.Extended`` and answered with SSH_FX_OP_UNSUPPORTED. An unknown request type shall be answered with SSH_FX_OP_UNSUPPORTED without being recorded.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/Ssh/SftpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-040
+STATUS: Active
+TITLE: Exception to status mapping
+STATEMENT: >>>
+An exception thrown while carrying out a request shall be answered with a STATUS whose code is the ``SftpException.Status``, or NO_SUCH_FILE for ``FileNotFoundException`` and ``DirectoryNotFoundException``, PERMISSION_DENIED for ``UnauthorizedAccessException``, OP_UNSUPPORTED for ``NotSupportedException``, and FAILURE for other ``IOException`` and ``ArgumentException``, with the exception message as the status message. Any other exception shall stop the SFTP session, close its channel, and be reported in ``SftpServer.Errors``.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PathsOutsideTheRoot_AreClampedToIt
+- OpenSshSftpTests.PermissionDenied_FromFailAlways_IsReportedPerFile
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-041
+STATUS: Active
+TITLE: Attribute encoding
+STATEMENT: >>>
+Attributes shall be encoded per SFTP version 3: size, uid/gid (only when both are present), permissions including the file type bits, and access and modification times as 32-bit Unix seconds clamped to the unsigned range, each present only when known.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: File systems
+
+[REQUIREMENT]
+UID: ITS-SFS-001
+STATUS: Active
+TITLE: Path normalisation helper
+STATEMENT: >>>
+``SftpPath.Normalize`` shall treat backslashes as slashes, drop empty and ``.`` segments, resolve ``..`` without ever going above ``/``, and return an absolute path starting with ``/``.
+<<<
+VERIFIED_BY: >>>
+- SshCryptoTests.SftpPath_NormalizesAndNeverEscapesTheRoot
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-002
+STATUS: Active
+TITLE: Pluggable file system
+STATEMENT: >>>
+The server shall serve any ``ISftpFileSystem`` implementation, passing it normalised absolute paths, and shall map exceptions it throws to SFTP statuses as ITS-SFTP-040 specifies.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+RELATIONS:
+- TYPE: Parent
+  VALUE: ITS-SFTP-040
+
+[REQUIREMENT]
+UID: ITS-SFS-003
+STATUS: Active
+TITLE: In-memory seeding and inspection
+STATEMENT: >>>
+``InMemorySftpFileSystem`` shall start with only ``/`` and provide ``AddFile`` (bytes or UTF-8 text; creating parent directories and replacing an existing file), ``AddDirectory`` (creating parents), ``FileExists``, ``DirectoryExists``, ``ReadAllBytes``, ``ReadAllText`` and ``AllFiles`` (every file path, ordinally sorted), all safe to call while clients are connected.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+- SftpExample.CollectInbox_DownloadsThenDeletes
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-004
+STATUS: Active
+TITLE: In-memory attributes and clock
+STATEMENT: >>>
+In-memory files shall default to mode 0644 and directories to 0755, with uid and gid 1000, and timestamps taken from the replaceable ``Clock`` (UTC now by default). Listings shall be ordered by name, ordinally.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- SftpExample.CollectInbox_DownloadsThenDeletes
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-005
+STATUS: Active
+TITLE: In-memory root is not a name
+STATEMENT: >>>
+The in-memory file system shall refuse to open ``/`` as a file or create it as a directory (SSH_FX_FAILURE), to rename ``/`` or onto ``/`` (PERMISSION_DENIED), and to remove ``/`` (PERMISSION_DENIED).
+<<<
+VERIFIED_BY: >>>
+- SftpFileSystemTests.InMemory_RefusesToCreateTheRootAsAFileOrDirectory
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-006
+STATUS: Active
+TITLE: In-memory open semantics
+STATEMENT: >>>
+In-memory ``OpenFile`` shall answer NO_SUCH_FILE when the parent directory is missing or when a mode that requires an existing file finds none, FAILURE for an existing file with ``CreateNew`` and for a directory, empty the file for ``Create`` and ``Truncate``, and return a stream with its own position over the shared content that honours the requested access.
+<<<
+VERIFIED_BY: >>>
+- SftpFileSystemTests.InMemory_RefusesToCreateTheRootAsAFileOrDirectory
+- SftpFileSystemTests.InMemory_EnforcesMaxFileSize_AndReadsPastTheEndAsEof
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-007
+STATUS: Active
+TITLE: In-memory maximum file size
+STATEMENT: >>>
+``InMemorySftpFileSystem.MaxFileSize`` shall default to 1 GiB, accept values from 0 to ``Array.MaxLength`` and throw ``ArgumentOutOfRangeException`` otherwise. A write or size change that would make a file larger than it, or a negative size, shall fail with SSH_FX_FAILURE and leave the file unchanged.
+<<<
+VERIFIED_BY: >>>
+- SftpFileSystemTests.InMemory_EnforcesMaxFileSize_AndReadsPastTheEndAsEof
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-008
+STATUS: Active
+TITLE: In-memory reads past the end
+STATEMENT: >>>
+Reading an in-memory stream at or beyond its end shall return 0 bytes, which the server reports as SSH_FX_EOF.
+<<<
+VERIFIED_BY: >>>
+- SftpFileSystemTests.InMemory_EnforcesMaxFileSize_AndReadsPastTheEndAsEof
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-009
+STATUS: Active
+TITLE: In-memory rename rules
+STATEMENT: >>>
+In-memory ``Rename`` shall answer NO_SUCH_FILE when the source or the target's parent directory is missing, do nothing when source and target are the same path, answer FAILURE when moving a directory into itself, and answer FAILURE when the target exists unless ``overwrite`` is true and both source and target are files.
+<<<
+VERIFIED_BY: >>>
+- SftpFileSystemTests.InMemory_RenameToItself_IsANoOp
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+- SftpExample.ConnectionCutMidUpload_IsRetried_AndLeavesNoFinalFileBehind
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-010
+STATUS: Active
+TITLE: In-memory directory operations
+STATEMENT: >>>
+In-memory ``CreateDirectory`` shall answer NO_SUCH_FILE when the parent is missing and FAILURE when the name exists; ``DeleteDirectory`` shall answer NO_SUCH_FILE for a missing path or a file and FAILURE for a non-empty directory; ``DeleteFile`` shall answer NO_SUCH_FILE for a missing path or a directory; ``ListDirectory`` shall answer FAILURE for a file.
+<<<
+VERIFIED_BY: >>>
+- SftpFileSystemTests.InMemory_RefusesToCreateTheRootAsAFileOrDirectory
+- SftpExample.CollectInbox_DownloadsThenDeletes
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-011
+STATUS: Active
+TITLE: Directory jail
+STATEMENT: >>>
+``DirectorySftpFileSystem`` shall serve its ``Root`` (the full path of the constructor argument) as ``/``. ``LocalPath`` shall map a server path below the root and answer PERMISSION_DENIED for any path that resolves outside it.
+<<<
+VERIFIED_BY: >>>
+- SftpFileSystemTests.Directory_RootWithTrailingSeparator_StillJails
+- OpenSshSftpTests.PathsOutsideTheRoot_AreClampedToIt
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-012
+STATUS: Active
+TITLE: Root prefix handling
+STATEMENT: >>>
+The jail check shall compare paths as whole components (case-insensitively on Windows), so a sibling directory whose name merely starts with the root's name is outside it; a root given with a trailing separator shall jail the same way; and a root that is a drive or file system root (``C:\`` or ``/``) shall allow every path below it.
+<<<
+VERIFIED_BY: >>>
+- SftpFileSystemTests.Directory_RootWithTrailingSeparator_StillJails
+- SftpFileSystemTests.Directory_ServingAFileSystemRoot_AllowsPathsBelowIt
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-013
+STATUS: Active
+TITLE: Links resolved and escapes refused
+STATEMENT: >>>
+Every existing component of a path shall be checked for symbolic links and junctions; one whose target lies outside the root shall make the path PERMISSION_DENIED, one that stays inside shall be followed (recursively, up to 32 levels, beyond which the path fails with SSH_FX_FAILURE).
+<<<
+VERIFIED_BY: >>>
+- SftpFileSystemTests.Directory_LinkLeadingOutsideTheRoot_IsRefused
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-014
+STATUS: Active
+TITLE: Directory file system operations
+STATEMENT: >>>
+``DirectorySftpFileSystem`` shall answer NO_SUCH_FILE for attributes, attribute changes, file deletion and directory deletion of a missing path, FAILURE when opening a directory as a file, creating a directory that exists, or deleting a non-empty directory, and NO_SUCH_FILE when creating a directory whose parent is missing. Files shall be opened with read, write and delete sharing.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-015
+STATUS: Active
+TITLE: Directory file system rename
+STATEMENT: >>>
+``DirectorySftpFileSystem.Rename`` shall move a directory only when the target does not exist, and move a file replacing an existing target only when ``overwrite`` is true, answering FAILURE when the target exists otherwise and NO_SUCH_FILE when the source is missing.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFS-016
+STATUS: Active
+TITLE: Directory file system attributes
+STATEMENT: >>>
+``DirectorySftpFileSystem`` shall report sizes and access and modification times from the disk, report Unix permission bits from the disk on non-Windows systems (0644 and 0755 on Windows), and apply size, times and (on non-Windows systems) permission bits from SETSTAT.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Sftp/SftpFileSystem.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Client interoperability
+
+[REQUIREMENT]
+UID: ITS-SFTP-042
+STATUS: Active
+TITLE: OpenSSH sftp client
+STATEMENT: >>>
+The server shall interoperate with the OpenSSH ``sftp`` client in batch mode with a pinned host key: login with an Ed25519 or ECDSA identity, put, get, ls -l, mkdir, rename, rm and rmdir, under every supported cipher, MAC and key exchange, and with forced rekeying.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- OpenSshSftpTests.EveryCipherMacAndKeyExchange_Works
+- OpenSshSftpTests.LargeTransfer_SurvivesRekeyingAndFragmentation
+- OpenSshSftpTests.DirectoryFileSystem_UploadThenAtomicRename_LikeAnUploadJob
+<<<
+COMMENT: >>>
+These tests skip when ``sftp`` and ``ssh-keygen`` are not on PATH, except on CI where they fail instead.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-043
+STATUS: Active
+TITLE: Client-visible failures
+STATEMENT: >>>
+Failures injected or produced by the server shall reach the OpenSSH client as the corresponding error: an injected FAILURE fails the transfer, PERMISSION_DENIED prints "Permission denied" for that file only, a wrong host key is refused before authentication, and an aborted connection fails the client while the server records no error.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.FailNext_FailsOneUpload_ThenTheRetrySucceeds
+- OpenSshSftpTests.PermissionDenied_FromFailAlways_IsReportedPerFile
+- OpenSshSftpTests.PinnedHostKey_Mismatch_IsRefusedByTheClient
+- OpenSshSftpTests.ConnectionDroppedMidUpload_ClientFails_ServerStaysHealthy
+<<<
+
+[REQUIREMENT]
+UID: ITS-SFTP-044
+STATUS: Active
+TITLE: SSH.NET client
+STATEMENT: >>>
+The server shall interoperate with SSH.NET for ECDSA key and password logins, host key fingerprint checks, upload with posix-rename, directory listing, download and delete.
+<<<
+VERIFIED_BY: >>>
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+- SftpExample.PasswordLogin_WithSshNet
+- SftpExample.CollectInbox_DownloadsThenDeletes
+- SftpExample.ImpostorHost_IsRefusedBeforeAnyCredentialsAreSent
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Review decisions
+
+[REQUIREMENT]
+UID: ITS-SSH-046
+STATUS: Rejected
+TITLE: ssh-rsa (SHA-1) signatures opt-in only
+STATEMENT: >>>
+SHA-1 ``ssh-rsa`` user authentication signatures shall be accepted only when enabled by an explicit server option.
+<<<
+RATIONALE: >>>
+SHA-1 ssh-rsa is accepted only when the client's own request names ssh-rsa, so there is no downgrade: a client that can use rsa-sha2-256 or rsa-sha2-512 (advertised in server-sig-algs) does so, and the signature algorithm must match the one the request declared. Making it opt-in would break old clients the fake exists to test.
+<<<
+COMMENT: >>>
+Current behaviour is specified by ITS-SSH-005 and ITS-SSH-008. The server never signs with SHA-1 ssh-rsa itself (ITS-SSH-009).
+<<<
+RELATIONS:
+- TYPE: Parent
+  VALUE: ITS-SSH-008
+
+[[/SECTION]]

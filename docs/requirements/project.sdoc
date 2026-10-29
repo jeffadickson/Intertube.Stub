@@ -1,0 +1,1665 @@
+[DOCUMENT]
+TITLE: Intertube.Stub project, examples and samples requirements
+OPTIONS:
+  VIEW_STYLE: Table
+
+[GRAMMAR]
+IMPORT_FROM_FILE: intertube.sgra
+
+[TEXT]
+STATEMENT: >>>
+This document covers everything about Intertube.Stub that is not library behaviour: how the
+package is built and published (PKG), the continuous integration pipeline (CI), the repository
+documentation (DOC), the example systems under test in examples/ (EX), the RedisLite sample
+application in samples/ (RL), and the overall verification strategy (VER). The library's own
+behaviour (core servers, SMTP and SFTP) is specified in the other documents in this folder.
+
+The key words "shall", "should" and "may" carry the meaning given to them by RFC 2119.
+
+VERIFIED_BY lists how each requirement is checked. A line of the form "- Type.Member" names an
+automated test: Type is the C# test class (without namespace) or the last segment of the F#
+module name, and Member is the C# method name or the text between double backticks of the F#
+test. A line of the form "- Review: path" means the requirement is checked by reading that file.
+RequirementsTraceTests fails the build if any named test does not exist.
+<<<
+
+[[SECTION]]
+TITLE: Packaging
+
+[REQUIREMENT]
+UID: ITS-PKG-001
+STATUS: Active
+TITLE: Package identity
+STATEMENT: >>>
+The library project src/Intertube.Stub/Intertube.Stub.csproj shall produce a NuGet package with
+PackageId Intertube.Stub and Version 0.1.0-preview.
+<<<
+RATIONALE: >>>
+A prerelease version signals that the public API may still change before the first release.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-002
+STATUS: Active
+TITLE: Target frameworks
+STATEMENT: >>>
+The library shall target net8.0 and net10.0, and shall reference System.IO.Pipelines 8.0.0 only
+for the net8.0 target.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-003
+STATUS: Active
+TITLE: MIT licence expression
+STATEMENT: >>>
+The package shall declare its licence with PackageLicenseExpression MIT, and the repository
+shall contain a LICENSE file with the MIT licence text and the copyright line
+"Copyright (c) 2026 Jeff Dickson".
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+- Review: LICENSE
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-004
+STATUS: Active
+TITLE: Package metadata
+STATEMENT: >>>
+The package shall declare Authors, Copyright, Description, PackageTags, PackageProjectUrl,
+RepositoryUrl and RepositoryType git, with the project and repository URLs pointing at
+https://github.com/jeffadickson/Intertube.Stub.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-005
+STATUS: Active
+TITLE: README shipped in the package
+STATEMENT: >>>
+The package shall include the repository's README.md at the package root and name it as
+PackageReadmeFile, so that nuget.org shows it as the package description page.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-006
+STATUS: Active
+TITLE: Symbol package
+STATEMENT: >>>
+Packing the library shall also produce a symbol package in the snupkg format (IncludeSymbols true,
+SymbolPackageFormat snupkg).
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-007
+STATUS: Active
+TITLE: SourceLink
+STATEMENT: >>>
+The library shall be built with SourceLink information: PublishRepositoryUrl and
+EmbedUntrackedSources shall be true, relying on the SourceLink support built into the .NET 8+
+SDK for GitHub.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-008
+STATUS: Active
+TITLE: Deterministic CI builds
+STATEMENT: >>>
+ContinuousIntegrationBuild shall be set to true when the build runs on GitHub Actions
+(GITHUB_ACTIONS is true), and only then.
+<<<
+RATIONALE: >>>
+Deterministic paths in the PDBs are needed for reproducible packages but hinder local debugging.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-009
+STATUS: Active
+TITLE: Package validation
+STATEMENT: >>>
+The library project shall set EnablePackageValidation to true, so that pack checks the package
+for inconsistencies between its target frameworks.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-010
+STATUS: Active
+TITLE: AOT compatibility analysis
+STATEMENT: >>>
+The library shall set IsAotCompatible to true for every target framework compatible with net8.0,
+so that trimming and native AOT analyzers run during the build.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-011
+STATUS: Active
+TITLE: XML documentation
+STATEMENT: >>>
+The library shall generate an XML documentation file that ships in the package. The missing-doc
+warning CS1591 may be suppressed.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-012
+STATUS: Active
+TITLE: Nullable reference types
+STATEMENT: >>>
+The library shall be compiled with nullable reference types enabled and the latest C# language
+version.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-013
+STATUS: Active
+TITLE: Warnings as errors
+STATEMENT: >>>
+The build of the whole solution shall treat every compiler and analyzer warning as an error.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+- Review: CONTRIBUTING.md
+<<<
+COMMENT: >>>
+This is enforced by the -warnaserror switch in CI and in the documented local build command, not
+by a TreatWarningsAsErrors property in the library project. There is no Directory.Build.props.
+Only samples/RedisLite/RedisLite.csproj sets TreatWarningsAsErrors itself.
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-014
+STATUS: Active
+TITLE: Internals visible only to the test project
+STATEMENT: >>>
+The library shall expose its internals only to the Intertube.Stub.Tests assembly.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Intertube.Stub.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-015
+STATUS: Active
+TITLE: Only the library is packable
+STATEMENT: >>>
+Every test, example and sample test project shall set IsPackable to false, so that packing the
+solution produces only the Intertube.Stub package.
+<<<
+VERIFIED_BY: >>>
+- Review: tests/Intertube.Stub.Tests/Intertube.Stub.Tests.csproj
+- Review: examples/Intertube.Stub.Examples/Intertube.Stub.Examples.csproj
+- Review: examples/Intertube.Stub.FSharp/Intertube.Stub.FSharp.fsproj
+- Review: samples/RedisLite.Tests/RedisLite.Tests.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-016
+STATUS: Deferred
+TITLE: Release notes in the package
+STATEMENT: >>>
+The package should carry PackageReleaseNotes describing the changes in each version.
+<<<
+RATIONALE: >>>
+Deferred by the maintainer until the first release.
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-017
+STATUS: Deferred
+TITLE: Package icon
+STATEMENT: >>>
+The package should include an icon referenced by PackageIcon.
+<<<
+RATIONALE: >>>
+Deferred by the maintainer until the first release.
+<<<
+
+[REQUIREMENT]
+UID: ITS-PKG-018
+STATUS: Deferred
+TITLE: Public API baseline
+STATEMENT: >>>
+The library should use Microsoft.CodeAnalysis.PublicApiAnalyzers with PublicAPI.Shipped.txt and
+PublicAPI.Unshipped.txt baseline files, so that every change to the public API is deliberate.
+<<<
+RATIONALE: >>>
+Deferred by the maintainer until the first release.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Build and continuous integration
+
+[REQUIREMENT]
+UID: ITS-CI-001
+STATUS: Active
+TITLE: Triggers
+STATEMENT: >>>
+The CI workflow shall run on every push to main and on every pull request.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-002
+STATUS: Active
+TITLE: Operating system matrix
+STATEMENT: >>>
+The CI test job shall run on ubuntu-latest, windows-latest and macos-latest, with fail-fast
+disabled so that a failure on one operating system does not cancel the others.
+<<<
+RATIONALE: >>>
+Socket behaviour (resets, Unix socket paths, timing) differs between platforms.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-003
+STATUS: Active
+TITLE: Read-only token
+STATEMENT: >>>
+The workflow shall grant the GITHUB_TOKEN only contents: read permission.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-004
+STATUS: Active
+TITLE: Concurrency
+STATEMENT: >>>
+The workflow shall group runs by workflow and ref and cancel an in-progress run when a newer run
+for the same ref starts.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-005
+STATUS: Active
+TITLE: Job timeout
+STATEMENT: >>>
+Each CI test job shall time out after 20 minutes.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-006
+STATUS: Active
+TITLE: Both SDKs installed
+STATEMENT: >>>
+The CI job shall install the .NET 8.0.x and 10.0.x SDKs, with .NET CLI telemetry and the logo
+banner turned off.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-007
+STATUS: Active
+TITLE: Release build with warnings as errors
+STATEMENT: >>>
+CI shall build Intertube.slnx in the Release configuration with -warnaserror.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-008
+STATUS: Active
+TITLE: Tests with hang detection
+STATEMENT: >>>
+CI shall run every test project in the solution in Release without rebuilding, with a blame hang
+timeout of 5 minutes and normal console verbosity.
+<<<
+RATIONALE: >>>
+A hung network test then produces a dump and a named culprit instead of hitting the job timeout.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-009
+STATUS: Active
+TITLE: Pack and upload the package
+STATEMENT: >>>
+On ubuntu-latest only, CI shall pack src/Intertube.Stub in Release without rebuilding, and upload
+the .nupkg and .snupkg as an artifact named package-(commit SHA), failing if no file is found.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-010
+STATUS: Active
+TITLE: Actions pinned to commit SHAs
+STATEMENT: >>>
+Every third-party action used by the workflow shall be pinned to a full commit SHA, with the
+version tag recorded in a trailing comment.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-011
+STATUS: Active
+TITLE: Dependabot
+STATEMENT: >>>
+Dependabot shall check the github-actions and nuget ecosystems of the repository root weekly.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/dependabot.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-012
+STATUS: Active
+TITLE: OpenSSH interop tests required on CI
+STATEMENT: >>>
+The OpenSSH interop tests shall be skipped when sftp and ssh-keygen are not on the PATH, except
+when the CI environment variable is "true" or "True", in which case they shall run and fail
+rather than be skipped.
+<<<
+RATIONALE: >>>
+A runner image that lost OpenSSH must not silently turn the interop coverage green.
+<<<
+VERIFIED_BY: >>>
+- Review: tests/Intertube.Stub.Tests/Sftp/OpenSsh.cs
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-013
+STATUS: Active
+TITLE: Pinned local tools
+STATEMENT: >>>
+The repository shall declare dotnet-stryker as a local tool in dotnet-tools.json at an exact
+version (4.16.0) with roll-forward disabled.
+<<<
+VERIFIED_BY: >>>
+- Review: dotnet-tools.json
+<<<
+
+[REQUIREMENT]
+UID: ITS-CI-014
+STATUS: Deferred
+TITLE: Release job publishing to NuGet
+STATEMENT: >>>
+A release workflow should publish the package and symbol package to nuget.org from a tagged
+commit.
+<<<
+RATIONALE: >>>
+Deferred by the maintainer until the first release.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Documentation
+
+[REQUIREMENT]
+UID: ITS-DOC-001
+STATUS: Active
+TITLE: README install section
+STATEMENT: >>>
+README.md shall contain an Install section giving the command
+"dotnet add package Intertube.Stub --prerelease", naming the Intertube.Stub,
+Intertube.Stub.Smtp and Intertube.Stub.Sftp namespaces and the supported target frameworks.
+<<<
+VERIFIED_BY: >>>
+- Review: README.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-002
+STATUS: Active
+TITLE: README links are absolute
+STATEMENT: >>>
+Every link in README.md shall be an absolute https URL, so that the links keep working when the
+README is rendered on nuget.org from inside the package.
+<<<
+VERIFIED_BY: >>>
+- Review: README.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-003
+STATUS: Active
+TITLE: README loopback warning
+STATEMENT: >>>
+README.md shall warn, in its SFTP section, that SftpServer binds 127.0.0.1 by default, that the
+address shall not be changed to a non-loopback address, and why: with no Users configured any
+login is accepted, so a DirectorySftpFileSystem would be readable and writable by anyone who
+can reach the port.
+<<<
+VERIFIED_BY: >>>
+- Review: README.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-004
+STATUS: Active
+TITLE: README feature overview and usage
+STATEMENT: >>>
+README.md shall describe, with code samples, the transports, framing helpers, lifecycle,
+concurrency, transcripts and assertions, scripted conversations, rule tables, fault injection,
+UDP, Unix sockets and the ready-made SFTP and SMTP servers.
+<<<
+VERIFIED_BY: >>>
+- Review: README.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-005
+STATUS: Active
+TITLE: README states the test-double limits
+STATEMENT: >>>
+README.md shall state that the SFTP server is not a production server: no rate limiting, no
+privilege separation, and Ed25519 verification that is not constant-time.
+<<<
+VERIFIED_BY: >>>
+- Review: README.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-006
+STATUS: Active
+TITLE: README layout, licence and policy links
+STATEMENT: >>>
+README.md shall describe the repository layout (src, tests, examples, samples), state the MIT
+licence and link to LICENSE, SECURITY.md, CONTRIBUTING.md, examples/README.md and
+samples/README.md.
+<<<
+VERIFIED_BY: >>>
+- Review: README.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-007
+STATUS: Active
+TITLE: README CI badge
+STATEMENT: >>>
+README.md should show the status badge of the CI workflow.
+<<<
+VERIFIED_BY: >>>
+- Review: README.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-008
+STATUS: Active
+TITLE: Private vulnerability reporting
+STATEMENT: >>>
+SECURITY.md shall direct reporters to GitHub Security Advisories for the repository, ask them not
+to open public issues for security problems, and ask for the version, target framework and a
+minimal reproduction.
+<<<
+VERIFIED_BY: >>>
+- Review: SECURITY.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-009
+STATUS: Active
+TITLE: Security scope
+STATEMENT: >>>
+SECURITY.md shall define the library as a loopback test double, list what is in scope (crashing
+or hanging the test host, escaping a DirectorySftpFileSystem root, a default exposing a server
+beyond loopback) and state that production-only weaknesses such as denial of service under load
+and timing side channels are generally out of scope.
+<<<
+VERIFIED_BY: >>>
+- Review: SECURITY.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-010
+STATUS: Active
+TITLE: Security loopback guidance
+STATEMENT: >>>
+SECURITY.md shall state that every server binds 127.0.0.1 by default and that a non-loopback
+address shall never be bound on a machine reachable by untrusted parties, singling out
+SftpServer, SmtpServer and file-touching TcpServer handlers.
+<<<
+VERIFIED_BY: >>>
+- Review: SECURITY.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-011
+STATUS: Active
+TITLE: Contributor prerequisites
+STATEMENT: >>>
+CONTRIBUTING.md shall list the prerequisites: the .NET 10 SDK plus the .NET 8 runtime, and an
+OpenSSH client (sftp and ssh-keygen on the PATH) for the SFTP interop tests, explaining that
+those tests are skipped locally without it.
+<<<
+VERIFIED_BY: >>>
+- Review: CONTRIBUTING.md
+<<<
+COMMENT: >>>
+CONTRIBUTING.md does not mention that the interop tests fail instead of skipping when CI=true
+(ITS-CI-012).
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-012
+STATUS: Active
+TITLE: Contributor build and test commands
+STATEMENT: >>>
+CONTRIBUTING.md shall give the build command with -warnaserror and the test command, and state
+how CI differs (Release configuration, packing with dotnet pack).
+<<<
+VERIFIED_BY: >>>
+- Review: CONTRIBUTING.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-013
+STATUS: Active
+TITLE: Pull request rules
+STATEMENT: >>>
+CONTRIBUTING.md shall require pull requests to build without warnings, to pass on all three CI
+operating systems and both target frameworks, to avoid timing- and OS-error-code-dependent
+tests, to add tests for behaviour changes and to update README.md when the public API changes.
+<<<
+VERIFIED_BY: >>>
+- Review: CONTRIBUTING.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-014
+STATUS: Active
+TITLE: Examples index
+STATEMENT: >>>
+examples/README.md shall list every example file with the dependency it mocks and the
+Intertube.Stub features it shows, describe the F# project, and give the command to run the
+examples.
+<<<
+VERIFIED_BY: >>>
+- Review: examples/README.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-015
+STATUS: Active
+TITLE: Samples guide
+STATEMENT: >>>
+samples/README.md shall describe the RedisLite projects, the design points under test, how
+FakeRedis uses each Intertube.Stub feature, the FsCheck and Hedgehog properties, and how to run
+Stryker with the recorded mutation scores.
+<<<
+VERIFIED_BY: >>>
+- Review: samples/README.md
+<<<
+
+[REQUIREMENT]
+UID: ITS-DOC-016
+STATUS: Deferred
+TITLE: Changelog
+STATEMENT: >>>
+The repository should contain a CHANGELOG recording the user-visible changes of each release.
+<<<
+RATIONALE: >>>
+Deferred by the maintainer until the first release.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Examples
+
+[TEXT]
+STATEMENT: >>>
+Each example is a small, realistic system under test that uses ordinary .NET networking and knows
+nothing about Intertube.Stub, together with the tests that mock its network dependency. The
+requirements below state what each example shall demonstrate.
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-001
+STATUS: Active
+TITLE: DNS resolver
+STATEMENT: >>>
+The DNS example shall demonstrate a resolver against a fake authoritative name server serving UDP
+and TCP on the same port: A records over UDP without opening TCP, CNAME chains followed, NXDOMAIN
+reported and not retried, a truncated (TC) answer retried over TCP, packet loss ridden out with
+retries, SERVFAIL and a silent primary failing over to the secondary, a spoofed reply with the
+wrong ID ignored, and giving up with a timeout when every server is silent.
+<<<
+VERIFIED_BY: >>>
+- DnsExample.ResolvesARecords_OverUdp
+- DnsExample.FollowsCnameChains
+- DnsExample.NxDomain_IsReportedAsSuch_AndNotRetried
+- DnsExample.TruncatedAnswer_IsRetriedOverTcp
+- DnsExample.PacketLoss_IsRiddenOutWithRetries
+- DnsExample.ServFail_MovesOnToTheNextServer
+- DnsExample.SilentPrimary_TimesOut_ThenTheSecondaryAnswers
+- DnsExample.SpoofedReplyWithTheWrongId_IsIgnored
+- DnsExample.EveryServerSilent_GivesUp
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-002
+STATUS: Active
+TITLE: Docker over a Unix socket
+STATEMENT: >>>
+The Docker example shall demonstrate HTTP over a UnixServer at a temporary path, reached through
+SocketsHttpHandler.ConnectCallback: listing only running containers, and a restart posted to the
+right endpoint, with an error status surfacing as HttpRequestException.
+<<<
+VERIFIED_BY: >>>
+- DockerUnixSocketExample.ListsOnlyRunningContainers
+- DockerUnixSocketExample.Restart_PostsToTheRightEndpoint
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-003
+STATUS: Active
+TITLE: FTPS file exchange
+STATEMENT: >>>
+The FTP example shall demonstrate a FluentFTP client against a fake FTPS server built on the SFTP
+in-memory file system, with explicit TLS on control and data connections: an encrypted upload
+verified then renamed, download then delete, a one-off disk-full failure retried, a server that
+silently truncates uploads caught by a SIZE check, a data connection dropped mid-download
+reported as an error rather than a truncated file, a server without TLS refused rather than
+downgraded, an impostor certificate rejected, and a wrong password not retried.
+<<<
+VERIFIED_BY: >>>
+- FtpExample.Upload_IsEncryptedEndToEnd_VerifiedThenRenamed
+- FtpExample.Collect_DownloadsThenDeletes
+- FtpExample.DiskFullOnce_IsRetried
+- FtpExample.ServerThatSilentlyTruncatesUploads_IsCaughtBySizeCheck
+- FtpExample.DataConnectionDroppedMidDownload_IsAnError_NotATruncatedFile
+- FtpExample.ServerWithoutTls_IsRefused_NotDowngraded
+- FtpExample.ImpostorCertificate_IsRejected
+- FtpExample.WrongPassword_IsNotRetried
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-004
+STATUS: Active
+TITLE: HL7 MLLP sender
+STATEMENT: >>>
+The HL7 example shall demonstrate an MLLP sender against a fake receiver that frames with
+ReadUntilAsync on the MLLP trailer: messages acknowledged on one connection, a negative ACK (AE)
+resent, a reject (AR) not resent, a lost ACK timing out and resent on a fresh connection, an ACK
+for the wrong control ID not trusted, an ACK delivered one byte at a time reassembled, and giving
+up after the maximum number of attempts against a receiver that resets every connection.
+<<<
+VERIFIED_BY: >>>
+- Hl7MllpExample.Messages_AreAcknowledged_OnOneConnection
+- Hl7MllpExample.NegativeAck_IsResent
+- Hl7MllpExample.Reject_IsNotResent
+- Hl7MllpExample.LostAck_TimesOut_AndIsResentOnAFreshConnection
+- Hl7MllpExample.AckForTheWrongMessage_IsNotTrusted
+- Hl7MllpExample.AckDribbledOutOneByteAtATime_IsReassembled
+- Hl7MllpExample.ReceiverThatResetsEveryConnection_GivesUpAfterMaxAttempts
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-005
+STATUS: Active
+TITLE: HTTP API client
+STATEMENT: >>>
+The HTTP API example shall demonstrate an HttpClient-based client: the expected request asserted,
+503 retried then succeeding, giving up after three 503 responses, a truncated body and a garbage
+status line reported as errors, a server that never answers hitting HttpClient.Timeout, and a
+byte-at-a-time response still parsed.
+<<<
+VERIFIED_BY: >>>
+- HttpApiExample.ReturnsForecast_AndSendsTheExpectedRequest
+- HttpApiExample.RetriesServiceUnavailable_ThenSucceeds
+- HttpApiExample.GivesUpAfterThreeUnavailableResponses
+- HttpApiExample.TruncatedBody_IsAnError
+- HttpApiExample.GarbageStatusLine_IsAnError
+- HttpApiExample.ServerThatNeverAnswers_HitsHttpClientTimeout
+- HttpApiExample.ByteAtATimeResponse_IsStillParsed
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-006
+STATUS: Active
+TITLE: IMAP mailbox poller
+STATEMENT: >>>
+The IMAP example shall demonstrate a MailKit poller against a fake IMAPS server: unseen messages
+handled then flagged seen with the password kept out of the transcript, at-least-once processing
+when the connection drops mid-FETCH or the handler fails, a wrong password reported as an
+authentication error, a locked mailbox (NO INUSE) reported without touching anything, and a BYE
+mid-session reported as an error rather than an empty inbox.
+<<<
+VERIFIED_BY: >>>
+- ImapExample.UnseenMessages_AreHandled_ThenFlaggedSeen
+- ImapExample.ConnectionDroppedMidFetch_LeavesTheMessageUnseen_ForTheNextPoll
+- ImapExample.FailingHandler_LeavesTheMessageUnseen
+- ImapExample.WrongPassword_IsAnAuthenticationError
+- ImapExample.LockedMailbox_IsReported_AndNothingIsTouched
+- ImapExample.ServerShuttingDown_MidSession_IsAnError_NotAnEmptyInbox
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-007
+STATUS: Active
+TITLE: SCPI instrument
+STATEMENT: >>>
+The instrument example shall demonstrate a SCPI multimeter client against a LineResponder with
+LF line endings and a live log to ITestOutputHelper: identify and measure, an overload reading
+parsed, a garbled reading rejected, and a fault matrix (none, 1-byte fragments, latency, connect
+delay, latency beyond the timeout, disconnect and reset mid-reply) in which each case either
+works or fails cleanly as expected.
+<<<
+VERIFIED_BY: >>>
+- InstrumentExample.IdentifiesAndMeasures
+- InstrumentExample.OverloadReading_IsParsedAsRealInstrumentsSendIt
+- InstrumentExample.GarbledReading_IsRejected
+- InstrumentExample.FaultMatrix_EitherWorksOrFailsCleanly
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-008
+STATUS: Active
+TITLE: Memcached client
+STATEMENT: >>>
+The memcached example shall demonstrate a working fake with mixed line and exact-length framing:
+a set then get checked against a golden transcript, and values containing the protocol
+terminator surviving because the length governs framing.
+<<<
+VERIFIED_BY: >>>
+- MemcachedExample.SetThenGet_GoldenTranscript
+- MemcachedExample.ValuesContainingTheTerminator_SurviveBecauseTheLengthGovernsFraming
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-009
+STATUS: Active
+TITLE: SOCKS5 and HTTP CONNECT proxies
+STATEMENT: >>>
+The proxy example shall demonstrate HttpClient through a relaying fake proxy: SOCKS5 tunnelling
+with the proxy resolving the name, SOCKS5 with credentials and with wrong credentials, a
+destination refused by policy never reached, HTTP CONNECT tunnelling TLS and answering a 407
+challenge, an unreachable destination reported as 502, and a tunnel cut mid-response failing.
+<<<
+VERIFIED_BY: >>>
+- ProxyExample.Socks5_TunnelsTheRequest_AndTheProxyResolvesTheName
+- ProxyExample.Socks5_WithCredentials
+- ProxyExample.Socks5_WrongCredentials_Fail
+- ProxyExample.Socks5_DestinationRefusedByPolicy_Fails
+- ProxyExample.HttpConnect_TunnelsTls_AndAnswersTheCredentialChallenge
+- ProxyExample.HttpConnect_UnreachableDestination_Is502
+- ProxyExample.ProxyCuttingTheTunnelMidResponse_Fails
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-010
+STATUS: Active
+TITLE: Retries by connection ID
+STATEMENT: >>>
+The resilience examples shall demonstrate a quote client recovering from resets on its first two
+connections and giving up after three attempts.
+<<<
+VERIFIED_BY: >>>
+- RetryExample.RecoversFromTwoResets
+- RetryExample.GivesUpAfterThreeAttempts
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-011
+STATUS: Active
+TITLE: TLS certificate pinning
+STATEMENT: >>>
+The resilience examples shall demonstrate certificate pinning against TlsOptions.SelfSigned:
+the pinned certificate accepted and any other certificate rejected with AuthenticationException.
+<<<
+VERIFIED_BY: >>>
+- TlsPinningExample.AcceptsThePinnedCertificate
+- TlsPinningExample.RejectsAnyOtherCertificate
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-012
+STATUS: Active
+TITLE: Length-prefixed binary protocol
+STATEMENT: >>>
+The resilience examples shall demonstrate a length-prefixed binary protocol parsed with
+ReadExactlyAsync: a round trip, a frame delivered one byte at a time reassembled, a truncated
+frame reported as end of stream, and a length prefix corrupted by TransformWrite rejected before
+allocating.
+<<<
+VERIFIED_BY: >>>
+- BinaryProtocolExample.RoundTrip
+- BinaryProtocolExample.ReassemblesAFrameDeliveredOneByteAtATime
+- BinaryProtocolExample.TruncatedFrame_IsEndOfStream
+- BinaryProtocolExample.InsaneLengthPrefix_IsRejectedBeforeAllocating
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-013
+STATUS: Active
+TITLE: SFTP report publisher
+STATEMENT: >>>
+The SFTP example shall demonstrate an SSH.NET publisher against SftpServer with an in-memory file
+system: publishing via a partial file then atomic rename, a failed write retried on a new
+connection, a connection cut mid-upload retried without leaving a final file behind, permission
+denied not retried, an impostor host refused before any credentials are sent, an unknown key
+failing authentication, collecting the inbox (download then delete, and keeping the file when
+the delete fails), a hung read hitting the operation timeout, and password login.
+<<<
+VERIFIED_BY: >>>
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+- SftpExample.FailedWrite_IsRetriedOnANewConnection
+- SftpExample.ConnectionCutMidUpload_IsRetried_AndLeavesNoFinalFileBehind
+- SftpExample.PermissionDenied_IsNotRetried
+- SftpExample.ImpostorHost_IsRefusedBeforeAnyCredentialsAreSent
+- SftpExample.UnknownKey_FailsAuthentication
+- SftpExample.CollectInbox_DownloadsThenDeletes
+- SftpExample.CollectInbox_DeleteFailure_KeepsTheFile
+- SftpExample.HungServer_HitsTheOperationTimeout
+- SftpExample.PasswordLogin_WithSshNet
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-014
+STATUS: Active
+TITLE: SMTP with the BCL SmtpClient and Conversation scripts
+STATEMENT: >>>
+The SMTP example shall demonstrate the BCL SmtpClient against Conversation scripts: a welcome mail
+sent, a rejected recipient raising SmtpFailedRecipientException, and a greylisting server
+surfacing a transient failure.
+<<<
+VERIFIED_BY: >>>
+- SmtpExample.SendsWelcomeMail
+- SmtpExample.RejectedRecipient_Throws
+- SmtpExample.GreylistingServer_SurfacesTransientFailure
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-015
+STATUS: Active
+TITLE: SMTP with MailKit and the ready-made SmtpServer
+STATEMENT: >>>
+The SMTP example shall demonstrate a MailKit order notifier against the library's SmtpServer: a
+confirmation sent over STARTTLS, authenticated, with the invoice attached; greylisting retried
+and delivered exactly once; a connection dropped before the server accepted the message retried;
+a permanent rejection not retried; and a wrong password failing without credentials sent in the
+clear.
+<<<
+VERIFIED_BY: >>>
+- OrderNotifierTests.Confirmation_GoesOverTls_Authenticated_WithTheInvoiceAttached
+- OrderNotifierTests.Greylisting_IsRetried_AndDeliversExactlyOnce
+- OrderNotifierTests.ConnectionDroppedBeforeTheServerAccepted_IsRetried
+- OrderNotifierTests.PermanentRejection_IsNotRetried
+- OrderNotifierTests.WrongPassword_FailsWithoutSendingCredentialsInTheClear
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-016
+STATUS: Active
+TITLE: UDP telemetry
+STATEMENT: >>>
+The UDP telemetry example shall demonstrate syslog and StatsD senders against UdpServer: syslog
+in RFC 5424 format, well-formed StatsD metrics, tolerance of seeded 40 percent packet loss, and
+senders that survive a missing collector.
+<<<
+VERIFIED_BY: >>>
+- UdpTelemetryExample.Syslog_UsesRfc5424Format
+- UdpTelemetryExample.Metrics_AreWellFormed
+- UdpTelemetryExample.Metrics_TolerateHeavyPacketLoss
+- UdpTelemetryExample.Metrics_SurviveAMissingCollector
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-017
+STATUS: Active
+TITLE: F# config client
+STATEMENT: >>>
+The F# example shall demonstrate a task-based config client tested with a LineResponder rule
+table, a Conversation script for SET then GET, a reset on the first connection retried, a hung
+service timing out on every attempt, a reply cut mid-line reported as an IOException rather than
+a truncated value, garbage from the service treated as a protocol error and not retried, and an
+FsCheck property that SET then GET round-trips any value the protocol can carry.
+<<<
+VERIFIED_BY: >>>
+- ConfigClientTests.rule table: GET of a known and an unknown key
+- ConfigClientTests.scripted conversation: SET then GET, exactly in that order
+- ConfigClientTests.a reset on the first connection is retried
+- ConfigClientTests.a hung service times out on every attempt, then fails
+- ConfigClientTests.a reply cut mid-line is an error, not a truncated value
+- ConfigClientTests.garbage from the service is a protocol error and is not retried
+- ConfigClientTests.SET then GET round-trips any value the protocol can carry
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-018
+STATUS: Active
+TITLE: F# SMTP
+STATEMENT: >>>
+The F# example shall demonstrate the ready-made SmtpServer from F#: a mail sent with the BCL
+SmtpClient captured with its sender, recipients, subject and body, and a recipient rejected with
+FailAlways surfacing as SmtpFailedRecipientException with no message captured.
+<<<
+VERIFIED_BY: >>>
+- SmtpTests.the ready-made SMTP server captures the mail
+- SmtpTests.a rejected recipient surfaces as SmtpFailedRecipientException
+<<<
+
+[REQUIREMENT]
+UID: ITS-EX-019
+STATUS: Active
+TITLE: Systems under test are independent of Intertube.Stub
+STATEMENT: >>>
+The system-under-test code in every example shall use only ordinary .NET networking or client
+libraries (HttpClient, SmtpClient, MailKit, FluentFTP, SSH.NET, TcpClient, UdpClient, SslStream)
+and shall not reference Intertube.Stub types.
+<<<
+VERIFIED_BY: >>>
+- Review: examples/README.md
+- Review: examples/Intertube.Stub.Examples
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: RedisLite sample
+
+[[SECTION]]
+TITLE: RESP codec
+
+[REQUIREMENT]
+UID: ITS-RL-001
+STATUS: Active
+TITLE: Encode and parse round trip
+STATEMENT: >>>
+Encoding any RESP2 value and parsing the bytes shall give back an equal value, and concatenated
+values shall parse in order.
+<<<
+VERIFIED_BY: >>>
+- RespCodecProperties.EncodeThenParse_RoundTrips
+- RespCodecProperties.Concatenated_ValuesParseInOrder
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-002
+STATUS: Active
+TITLE: Parsing independent of fragmentation
+STATEMENT: >>>
+Parsing shall give the same result however the bytes are split across buffer segments, and a
+strict prefix of an encoded value shall report that more data is needed without consuming
+anything.
+<<<
+VERIFIED_BY: >>>
+- RespCodecProperties.Parse_IsIndependentOfSegmentBoundaries
+- RespCodecProperties.StrictPrefix_NeedsMoreData
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-003
+STATUS: Active
+TITLE: Malformed input fails only with RespProtocolException
+STATEMENT: >>>
+Arbitrary bytes, or a valid value with a single corrupted byte, shall fail to parse only with
+RespProtocolException, and each kind of malformed input shall be rejected with a reason.
+<<<
+VERIFIED_BY: >>>
+- RespCodecProperties.Garbage_OnlyEverFailsWithProtocolException
+- RespCodecProperties.SingleByteCorruption_OnlyEverFailsWithProtocolException
+- RespCodecProperties.MalformedInput_IsRejectedWithAReason
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-004
+STATUS: Active
+TITLE: Canonical encoding
+STATEMENT: >>>
+Integers shall be encoded in canonical decimal, and simple strings containing CR or LF anywhere
+shall be refused.
+<<<
+VERIFIED_BY: >>>
+- RespCodecProperties.Integers_UseCanonicalDecimal
+- RespCodecProperties.SimpleStrings_RejectLineBreaks
+- MutationTargetedTests.SimpleStrings_RejectLineBreaksAnywhere
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-005
+STATUS: Active
+TITLE: Parser resource limits
+STATEMENT: >>>
+The parser shall accept arrays nested exactly to RespReader.MaxDepth (64) and reject deeper
+nesting, shall fail a line with no CRLF within MaxLineLength (64 KiB), shall reject a stray CR at
+the start of a line, and shall not preallocate more than 1024 elements from an array length
+prefix.
+<<<
+RATIONALE: >>>
+A hostile or corrupt server must not be able to make the client allocate gigabytes from one
+length prefix.
+<<<
+VERIFIED_BY: >>>
+- RespCodecProperties.DeepNesting_IsRejected
+- MutationTargetedTests.Nesting_ExactlyAtTheLimit_IsAccepted
+- MutationTargetedTests.LineWithoutCrLf_WaitsUpToTheLimit_ThenFails
+- MutationTargetedTests.StrayCarriageReturn_AtStartOfLine_IsRejected
+- MutationTargetedTests.HugeArrayHeader_DoesNotPreallocate
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-006
+STATUS: Active
+TITLE: Value equality
+STATEMENT: >>>
+RESP values shall compare by value, distinguishing nil, empty and null.
+<<<
+VERIFIED_BY: >>>
+- MutationTargetedTests.ValueEquality_DistinguishesNilEmptyAndNull
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Connection options
+
+[REQUIREMENT]
+UID: ITS-RL-010
+STATUS: Active
+TITLE: URL round trip
+STATEMENT: >>>
+RedisOptions.Parse(options.ToUrl()) shall equal options for TCP, TLS, IPv6 and Unix socket
+options with arbitrary credentials, and ToUrl shall produce a canonical form.
+<<<
+VERIFIED_BY: >>>
+- RedisOptionsProperties.Url_RoundTrips
+- MutationTargetedTests.ToUrl_IsCanonical
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-011
+STATUS: Active
+TITLE: URL parsing
+STATEMENT: >>>
+RedisOptions.Parse shall accept the redis, rediss and Unix socket URL forms with host, port,
+database, TLS and credentials, accept ports at the boundaries of the valid range, treat empty
+user info as no credentials, and reject malformed URLs or URLs missing a host or path with
+FormatException.
+<<<
+VERIFIED_BY: >>>
+- RedisOptionsProperties.Parses_CommonForms
+- RedisOptionsProperties.Parses_CredentialsAndUnixSockets
+- RedisOptionsProperties.Rejects_MalformedUrls
+- MutationTargetedTests.Ports_AtTheBoundaries_AreAccepted
+- MutationTargetedTests.MissingHostOrPath_IsRejected
+- MutationTargetedTests.EmptyUserInfo_MeansNoCredentials
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-012
+STATUS: Active
+TITLE: Option defaults
+STATEMENT: >>>
+RedisOptions shall default to localhost port 6379, database 0, a 5 second connect timeout, a
+5 second command timeout, 2 retries and a 50 ms initial retry backoff.
+<<<
+VERIFIED_BY: >>>
+- MutationTargetedTests.Defaults_PointAtLocalhost
+- Review: samples/RedisLite/RedisOptions.cs
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Client commands and transports
+
+[REQUIREMENT]
+UID: ITS-RL-020
+STATUS: Active
+TITLE: Basic commands
+STATEMENT: >>>
+RedisClient shall provide PING, GET, SET, DEL, INCRBY and PUBLISH as typed methods plus
+ExecuteAsync for any command, and they shall round-trip against a server.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.BasicCommands_RoundTrip
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-021
+STATUS: Active
+TITLE: Unicode values
+STATEMENT: >>>
+Any valid Unicode string shall survive SET then GET over a real socket.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.AnyUnicodeValue_RoundTripsOverTheWire
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-022
+STATUS: Active
+TITLE: SET options
+STATEMENT: >>>
+SET with an expiry shall send it in milliseconds (PX), and SET with SetCondition.IfExists shall
+send XX and overwrite only an existing key.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.Expiry_IsSentInMilliseconds
+- MutationTargetedTests.SetIfExists_SendsXx_AndOnlyOverwrites
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-023
+STATUS: Active
+TITLE: Server errors
+STATEMENT: >>>
+An error reply shall surface as RedisServerException carrying the error code and message.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.ServerErrors_SurfaceAsRedisServerException
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-024
+STATUS: Active
+TITLE: Pipelining
+STATEMENT: >>>
+Concurrent callers shall share one connection, every command shall be written before any reply
+is read, and replies shall be handed back in FIFO order.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.Pipeline_WritesEveryCommandBeforeAnyReply
+- ClientTests.ConcurrentCallers_ShareOnePipelinedConnection
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-025
+STATUS: Active
+TITLE: Handshake
+STATEMENT: >>>
+AUTH, SELECT and CLIENT SETNAME shall be pipelined before the first command; no AUTH shall be
+sent when no password is configured; and a wrong password shall fail fast without retrying.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.Handshake_AuthSelectAndName_ArePipelinedBeforeFirstCommand
+- ClientTests.MissingPassword_GetsNoAuth
+- ClientTests.WrongPassword_FailsFastWithoutRetrying
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-026
+STATUS: Active
+TITLE: TLS
+STATEMENT: >>>
+The client shall connect over TLS when the server certificate passes the configured validation
+and shall reject an untrusted certificate.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.Tls_WithAnOnTheFlyCertificate
+- ClientTests.Tls_UntrustedCertificate_IsRejected
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-027
+STATUS: Active
+TITLE: Unix sockets
+STATEMENT: >>>
+The client shall connect over a Unix domain socket, on Windows as well as Unix.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.UnixSocket_Works
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-028
+STATUS: Active
+TITLE: Pub/sub
+STATEMENT: >>>
+SubscribeAsync shall stream messages as an IAsyncEnumerable on a dedicated connection that is
+counted in ConnectionsOpened, and the stream shall end when the server closes the connection.
+<<<
+VERIFIED_BY: >>>
+- ClientTests.PubSub_StreamsMessagesAsAsyncEnumerable
+- ClientTests.PubSub_EndsWhenServerCloses
+- MutationTargetedTests.Subscribe_CountsItsDedicatedConnection
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Resilience
+
+[REQUIREMENT]
+UID: ITS-RL-030
+STATUS: Active
+TITLE: Idempotent commands retried
+STATEMENT: >>>
+Each command in the idempotent set (PING, ECHO, GET, SET, DEL, EXISTS, TTL, PTTL, EXPIRE,
+PEXPIRE, MGET, STRLEN, TYPE, KEYS, DBSIZE) shall be retried after a connection failure, up to
+MaxRetries times.
+<<<
+VERIFIED_BY: >>>
+- ResilienceTests.IdempotentCommand_IsRetriedAfterConnectionReset
+- MutationTargetedTests.IdempotentCommands_AreRetried
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-031
+STATUS: Active
+TITLE: Non-idempotent commands not retried once sent
+STATEMENT: >>>
+A non-idempotent command (such as INCRBY or PUBLISH) that may have been sent shall not be
+retried after a connection failure; the caller shall get RedisConnectionException.
+<<<
+VERIFIED_BY: >>>
+- ResilienceTests.NonIdempotentCommand_IsNotRetriedOnceSent
+- MutationTargetedTests.NonIdempotentCommands_AreNotRetried
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-032
+STATUS: Active
+TITLE: Failures before sending are always retried
+STATEMENT: >>>
+A failure while connecting or during the handshake shall be retried for any command, including
+non-idempotent ones, because nothing was sent.
+<<<
+VERIFIED_BY: >>>
+- ResilienceTests.FailureDuringHandshake_IsRetriedEvenForNonIdempotentCommands
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-033
+STATUS: Active
+TITLE: Exponential backoff
+STATEMENT: >>>
+The delay between retry attempts shall double from RetryBackoff on each attempt.
+<<<
+VERIFIED_BY: >>>
+- MutationTargetedTests.Backoff_DoublesBetweenAttempts
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-034
+STATUS: Active
+TITLE: Command timeouts
+STATEMENT: >>>
+A command that receives no reply within CommandTimeout shall fail with RedisTimeoutException
+when retries are exhausted or disabled, and an idempotent command shall recover on a new
+connection when retries remain.
+<<<
+VERIFIED_BY: >>>
+- ResilienceTests.HungServer_TimesOut_ThenRecoversOnANewConnection
+- ResilienceTests.HungServer_WithoutRetries_RaisesTimeout
+- ResilienceTests.SlowServer_BeyondCommandTimeout_TimesOut
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-035
+STATUS: Active
+TITLE: Fail closed
+STATEMENT: >>>
+A timeout, a protocol error or a cut connection shall poison the connection and fail every
+outstanding command immediately, and the client shall open a new connection for the next
+command instead of reusing it.
+<<<
+VERIFIED_BY: >>>
+- ResilienceTests.ConnectionCutMidReply_IsDetected
+- ClientTests.MalformedReplies_AreProtocolErrors_AndTheConnectionIsReplaced
+- MutationTargetedTests.ServerClosingBetweenReplies_FailsPendingCommandsImmediately
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-036
+STATUS: Active
+TITLE: Fragmented replies
+STATEMENT: >>>
+Replies delivered one byte at a time shall be reassembled.
+<<<
+VERIFIED_BY: >>>
+- ResilienceTests.ByteAtATimeReplies_AreReassembled
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-037
+STATUS: Active
+TITLE: Reset under load
+STATEMENT: >>>
+When the connection is reset while many callers have commands in flight, every caller shall
+complete, either with a result or with a RedisLite exception.
+<<<
+VERIFIED_BY: >>>
+- ResilienceTests.ResetUnderLoad_AllCallersComplete
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-038
+STATUS: Active
+TITLE: Exception hierarchy
+STATEMENT: >>>
+Every failure shall surface as a RedisException subtype: RedisConnectionException for connection
+failures (including a failed write), RedisTimeoutException (a RedisConnectionException) for
+timeouts, RespProtocolException for malformed replies and RedisServerException for error
+replies.
+<<<
+VERIFIED_BY: >>>
+- MutationTargetedTests.WriteFailure_IsAConnectionException
+- ResilienceTests.UnreachableServer_IsReportedAfterRetries
+- Review: samples/RedisLite/Exceptions.cs
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-039
+STATUS: Active
+TITLE: Dispose fails outstanding commands
+STATEMENT: >>>
+Disposing the client shall fail every outstanding command.
+<<<
+VERIFIED_BY: >>>
+- MutationTargetedTests.Dispose_FailsOutstandingCommands
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Command line
+
+[REQUIREMENT]
+UID: ITS-RL-050
+STATUS: Active
+TITLE: One-shot commands
+STATEMENT: >>>
+redis-lite with a command on the command line shall run it once, print the reply formatted the
+way redis-cli does, and exit with code 0 on success and 1 on an error reply.
+<<<
+VERIFIED_BY: >>>
+- CliTests.OneShotCommands_PrintLikeRedisCli
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-051
+STATUS: Active
+TITLE: Interactive prompt
+STATEMENT: >>>
+redis-lite without a command shall run a prompt that splits lines with redis-cli quoting rules,
+reports unbalanced quotes without exiting, and exits with code 0 on quit, exit or end of input.
+<<<
+VERIFIED_BY: >>>
+- CliTests.Repl_RunsQuotedCommandsUntilQuit
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-052
+STATUS: Active
+TITLE: Server URL
+STATEMENT: >>>
+redis-lite shall take the server URL from --url or -u, falling back to the REDIS_URL environment
+variable and then redis://localhost, and shall exit with code 2 when the URL is invalid.
+<<<
+VERIFIED_BY: >>>
+- CliTests.BadUrl_ExitsWithUsageError
+- Review: samples/RedisLite.Cli/CliApp.cs
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-053
+STATUS: Active
+TITLE: Reply formatting
+STATEMENT: >>>
+Nested arrays, integers, nil and empty arrays shall be formatted as redis-cli formats them.
+<<<
+VERIFIED_BY: >>>
+- CliTests.Format_NestedArrays
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-054
+STATUS: Active
+TITLE: Tokenizer
+STATEMENT: >>>
+Splitting a quoted list of tokens shall give back the tokens, and arbitrary input shall fail only
+with FormatException.
+<<<
+VERIFIED_BY: >>>
+- HedgehogProperties.Tokenizer_SplitInvertsQuote
+- HedgehogProperties.Tokenizer_RejectsOnlyWithFormatException
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-055
+STATUS: Active
+TITLE: SUBSCRIBE in the CLI
+STATEMENT: >>>
+redis-lite SUBSCRIBE shall print each message as "channel: text" until cancelled.
+<<<
+VERIFIED_BY: >>>
+- Review: samples/RedisLite.Cli/CliApp.cs
+<<<
+COMMENT: >>>
+No automated test drives the CLI's SUBSCRIBE path.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: RedisLite verification
+
+[REQUIREMENT]
+UID: ITS-RL-060
+STATUS: Active
+TITLE: Model-based test under fragmentation
+STATEMENT: >>>
+A Hedgehog model-based test shall check that random sequences of SET, GET, DEL and INCRBY give
+the same results through the client, a socket and FakeRedis as against an in-memory dictionary,
+while Intertube.Stub fragments every reply at a random size.
+<<<
+VERIFIED_BY: >>>
+- HedgehogProperties.Client_AgreesWithModel_UnderRandomFragmentation
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-061
+STATUS: Active
+TITLE: Corruption property
+STATEMENT: >>>
+A Hedgehog property shall check that, with seeded random corruption of replies, every client call
+completes in bounded time and throws only RedisLite exceptions.
+<<<
+VERIFIED_BY: >>>
+- HedgehogProperties.Client_SurvivesCorruptReplies
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-062
+STATUS: Active
+TITLE: Valid Unicode generators
+STATEMENT: >>>
+The FsCheck generators shall produce only valid Unicode strings (no lone UTF-16 surrogates) and
+shall provide shrinkers for RESP values and options.
+<<<
+VERIFIED_BY: >>>
+- Review: samples/RedisLite.Tests/Generators.cs
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-063
+STATUS: Active
+TITLE: Mutation testing configuration
+STATEMENT: >>>
+stryker-config.json shall mutate RedisLite.csproj using RedisLite.Tests.csproj at the Standard
+mutation level with per-test coverage analysis, with thresholds high 85, low 70 and break 60,
+ignoring ConfigureAwait, exception constructors and FlushAsync as equivalent mutants.
+<<<
+VERIFIED_BY: >>>
+- Review: samples/RedisLite.Tests/stryker-config.json
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-064
+STATUS: Active
+TITLE: XML docs enforced
+STATEMENT: >>>
+The RedisLite library shall generate XML documentation and treat warnings as errors, so that a
+missing or broken doc comment on a public member fails the build.
+<<<
+VERIFIED_BY: >>>
+- Review: samples/RedisLite/RedisLite.csproj
+<<<
+
+[REQUIREMENT]
+UID: ITS-RL-065
+STATUS: Active
+TITLE: FakeRedis
+STATEMENT: >>>
+RedisLite's tests shall use FakeRedis, an in-memory Redis built on Intertube.Stub that parses
+requests with the client's own RespReader and allows per-connection interception.
+<<<
+VERIFIED_BY: >>>
+- Review: samples/RedisLite.Tests/FakeRedis.cs
+<<<
+
+[[/SECTION]]
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Verification strategy
+
+[REQUIREMENT]
+UID: ITS-VER-001
+STATUS: Active
+TITLE: Library tests on both frameworks
+STATEMENT: >>>
+The library test project tests/Intertube.Stub.Tests shall target net8.0 and net10.0, so that
+every library test runs on both supported frameworks.
+<<<
+VERIFIED_BY: >>>
+- Review: tests/Intertube.Stub.Tests/Intertube.Stub.Tests.csproj
+<<<
+COMMENT: >>>
+The example and sample projects target net10.0 only.
+<<<
+
+[REQUIREMENT]
+UID: ITS-VER-002
+STATUS: Active
+TITLE: Cross-OS test runs
+STATEMENT: >>>
+Every test in the solution shall run on Linux, Windows and macOS in CI.
+<<<
+VERIFIED_BY: >>>
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-VER-003
+STATUS: Active
+TITLE: Examples and samples are tests
+STATEMENT: >>>
+The examples and the RedisLite sample shall be part of Intertube.slnx and run as tests in CI, so
+that they double as end-to-end tests of the library against real client libraries.
+<<<
+VERIFIED_BY: >>>
+- Review: Intertube.slnx
+- Review: .github/workflows/ci.yml
+<<<
+
+[REQUIREMENT]
+UID: ITS-VER-004
+STATUS: Active
+TITLE: Property-based testing
+STATEMENT: >>>
+Property-based tests shall be used where inputs are open-ended: FsCheck for the RESP codec, URL
+options and the F# config client, and Hedgehog for model-based and corruption properties.
+<<<
+VERIFIED_BY: >>>
+- RespCodecProperties.EncodeThenParse_RoundTrips
+- RedisOptionsProperties.Url_RoundTrips
+- ConfigClientTests.SET then GET round-trips any value the protocol can carry
+- HedgehogProperties.Client_AgreesWithModel_UnderRandomFragmentation
+<<<
+
+[REQUIREMENT]
+UID: ITS-VER-005
+STATUS: Active
+TITLE: Mutation testing
+STATEMENT: >>>
+Mutation testing with Stryker should be run on RedisLite, with a mutation score below 60 percent
+failing the run, and surviving mutants either killed by targeted tests or reviewed as equivalent.
+<<<
+VERIFIED_BY: >>>
+- Review: samples/RedisLite.Tests/stryker-config.json
+- Review: samples/README.md
+<<<
+COMMENT: >>>
+Stryker is not run in CI; it is run by hand with dotnet tool restore and dotnet stryker.
+<<<
+
+[REQUIREMENT]
+UID: ITS-VER-006
+STATUS: Active
+TITLE: Interop with real clients
+STATEMENT: >>>
+The SFTP server shall be tested against the real OpenSSH sftp client and SSH.NET, and the SMTP
+server against MailKit and the BCL SmtpClient.
+<<<
+VERIFIED_BY: >>>
+- OpenSshSftpTests.PutAndGet_RoundTripThroughMemory
+- SftpExample.Publishes_ViaPartialFileThenAtomicRename
+- OrderNotifierTests.Confirmation_GoesOverTls_Authenticated_WithTheInvoiceAttached
+- SmtpTests.the ready-made SMTP server captures the mail
+<<<
+
+[REQUIREMENT]
+UID: ITS-VER-007
+STATUS: Active
+TITLE: Requirements traceability
+STATEMENT: >>>
+Every VERIFIED_BY entry naming a test in any .sdoc file in docs/requirements shall resolve to a real test
+method, and every requirement UID shall be unique and well formed; a test in
+tests/Intertube.Stub.Tests shall check both.
+<<<
+VERIFIED_BY: >>>
+- RequirementsTraceTests.EveryVerifiedByEntryNamesARealTest
+- RequirementsTraceTests.UidsAreUniqueAndWellFormed
+<<<
+
+[[/SECTION]]

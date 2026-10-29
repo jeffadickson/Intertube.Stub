@@ -483,3 +483,7 @@ $RECYCLE.BIN/
 
 # Stryker
 StrykerOutput/
+
+# StrictDoc export
+requirements-html/
+docs/requirements/output/

@@ -1,0 +1,1288 @@
+[DOCUMENT]
+TITLE: Intertube.Stub SMTP server requirements
+OPTIONS:
+  VIEW_STYLE: Table
+
+[GRAMMAR]
+IMPORT_FROM_FILE: intertube.sgra
+
+[TEXT]
+STATEMENT: >>>
+This document specifies the ready-made SMTP server in the ``Intertube.Stub.Smtp`` namespace: ``SmtpServer`` and its options (``SmtpServerOptions``), the per-connection SMTP session (RFC 5321, with STARTTLS per RFC 3207 and AUTH PLAIN/LOGIN per RFC 4954), its fault injection and interception hooks, and the captured ``SmtpMessage`` with its light MIME reading (RFC 2045, 2046 and 2047). Requirements with UIDs ``ITS-SMTP-*`` cover the protocol and server; ``ITS-MIME-*`` cover the parsing of captured messages. The underlying TCP server, connections, TLS and transcripts are specified elsewhere and are referenced here only where the SMTP server depends on them.
+
+The key words "shall", "should" and "may" carry the meaning given in RFC 2119.
+
+VERIFIED_BY lists the automated tests that exercise each requirement, as ``TypeName.MemberName``: the C# test class and method, or for F# the module name and the test's double-backticked name. A line starting with "Review:" names the source file to inspect where no automated test covers the requirement; such requirements also carry the comment "No automated test."
+<<<
+
+[[SECTION]]
+TITLE: Server lifecycle and options
+
+[REQUIREMENT]
+UID: ITS-SMTP-001
+STATUS: Active
+TITLE: Start on an ephemeral loopback port
+STATEMENT: >>>
+``SmtpServer.Start()`` with no options (or null) shall start listening immediately on the IPv4 loopback address on an ephemeral port, exposing the bound address and port through ``Host`` and ``Port``, and ``ToString()`` shall return ``smtp://<Host>:<Port>``.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody
+- SmtpTests.the ready-made SMTP server captures the mail
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-002
+STATUS: Active
+TITLE: Configurable listening endpoint
+STATEMENT: >>>
+The server shall listen on ``SmtpServerOptions.Address`` and ``SmtpServerOptions.Port`` when they are set; a port of 0 (the default) shall select an ephemeral port.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpServer.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-003
+STATUS: Active
+TITLE: Implicit TLS requires a certificate
+STATEMENT: >>>
+``SmtpServer.Start`` shall throw ``ArgumentException`` when ``ImplicitTls`` is true and ``Tls`` is null.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpServer.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-004
+STATUS: Active
+TITLE: Implicit TLS from the first byte
+STATEMENT: >>>
+When ``ImplicitTls`` is true, every connection shall complete a TLS handshake with the ``Tls`` certificate before the greeting is sent (port 465 style), STARTTLS shall not be advertised, and captured messages shall have ``Tls`` set to true.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpServer.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-005
+STATUS: Active
+TITLE: TCP-level options pass through
+STATEMENT: >>>
+``SmtpServerOptions.Server`` (a ``ServerOptions``) shall configure the underlying ``TcpServer`` exposed as ``SmtpServer.Tcp``, including faults, concurrency, logging, transcripts and ``MaxLineLength``.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.OverlongLine_GetsA500AndTheConnectionCloses_WithoutAHandlerError
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-006
+STATUS: Active
+TITLE: Stopping and disposing
+STATEMENT: >>>
+``StopAsync()`` shall stop accepting connections and close every open session, with the semantics of ``StreamServer.StopAsync``; ``DisposeAsync()`` shall dispose the underlying TCP server.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpServer.cs
+<<<
+COMMENT: >>>
+No automated test. ``DisposeAsync`` is exercised by every test's ``await using`` but its effect is not asserted.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-007
+STATUS: Active
+TITLE: Handler errors are surfaced
+STATEMENT: >>>
+``SmtpServer.Errors`` shall expose the underlying TCP server's handler exceptions and ``ThrowIfFaulted()`` shall throw if any occurred; protocol errors by the client (malformed commands, disconnects, over-long lines) shall not be recorded as handler errors.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mail_SizeParameter_IsCheckedRobustly
+- SmtpServerTests.ClientVanishingMidData_DeliversNothing
+- SmtpProtocolTests.OverlongLine_GetsA500AndTheConnectionCloses_WithoutAHandlerError
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Greeting, EHLO and HELO
+
+[REQUIREMENT]
+UID: ITS-SMTP-008
+STATUS: Active
+TITLE: Service greeting
+STATEMENT: >>>
+On each new connection the server shall send ``220 <Domain> ESMTP Intertube.Stub``, where ``Domain`` is ``SmtpServerOptions.Domain`` (default ``smtp.intertube.test``).
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody
+- SmtpTests.the ready-made SMTP server captures the mail
+<<<
+COMMENT: >>>
+The tests rely on a valid 220 greeting; none asserts its exact text.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-009
+STATUS: Active
+TITLE: EHLO multi-line reply
+STATEMENT: >>>
+``EHLO <domain>`` shall be answered with a multi-line 250 reply whose first line is ``250-<Domain> greets <domain>``, followed by one line per extension, every line but the last using ``250-`` and the last using ``250`` followed by a space.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.DotStuffing_IsUndone_AndPipelinedCommandsAreAnswered
+- SmtpServerTests.Auth_PlainAndLogin_AndMailRequiresIt
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-010
+STATUS: Active
+TITLE: Always-advertised extensions
+STATEMENT: >>>
+The EHLO reply shall always advertise, in this order, ``SIZE <MaxMessageSize>``, ``PIPELINING``, ``8BITMIME``, ``SMTPUTF8`` and ``ENHANCEDSTATUSCODES``.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.DotStuffing_IsUndone_AndPipelinedCommandsAreAnswered
+<<<
+COMMENT: >>>
+The test asserts only that ``ENHANCEDSTATUSCODES`` is the last line when neither TLS nor AUTH is configured.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-011
+STATUS: Active
+TITLE: STARTTLS advertised only when available
+STATEMENT: >>>
+The EHLO reply shall advertise ``STARTTLS`` if and only if ``Tls`` is set and the connection is not already using TLS.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.StartTls_RequiredBeforeMail_AndTranscriptStaysReadable
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-012
+STATUS: Active
+TITLE: AUTH advertised only when users are configured
+STATEMENT: >>>
+The EHLO reply shall advertise ``AUTH PLAIN LOGIN`` (after STARTTLS, if present) if and only if ``Users`` contains at least one account.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.Auth_PlainAndLogin_AndMailRequiresIt
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-013
+STATUS: Active
+TITLE: HELO
+STATEMENT: >>>
+``HELO <domain>`` shall be answered with the single line ``250 <Domain>`` and shall mark the session as greeted, without advertising extensions.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.ClientVanishingMidData_DeliversNothing
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-014
+STATUS: Active
+TITLE: EHLO and HELO require a domain
+STATEMENT: >>>
+``EHLO`` or ``HELO`` without an argument shall be answered with ``501 5.5.4 Syntax: EHLO domain`` (or ``HELO domain``) and shall not mark the session as greeted.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Greeting_NeedsADomain
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-015
+STATUS: Active
+TITLE: EHLO and HELO reset the transaction
+STATEMENT: >>>
+A successful ``EHLO`` or ``HELO`` shall discard any mail transaction in progress (sender and recipients) and shall not change the authentication state.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Mail transaction
+
+[REQUIREMENT]
+UID: ITS-SMTP-016
+STATUS: Active
+TITLE: MAIL requires a greeting
+STATEMENT: >>>
+``MAIL`` before a successful ``EHLO`` or ``HELO`` shall be answered with ``503 5.5.1 Say EHLO first``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-017
+STATUS: Active
+TITLE: MAIL FROM starts a transaction
+STATEMENT: >>>
+A valid ``MAIL FROM:<address>`` in a greeted session (and, where configured, over TLS and authenticated) shall be answered with ``250 2.1.0 OK`` and shall record the address, without angle brackets, as the transaction's sender.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody
+- SmtpTests.the ready-made SMTP server captures the mail
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-018
+STATUS: Active
+TITLE: Null reverse path
+STATEMENT: >>>
+``MAIL FROM:<>`` shall be accepted, and the captured message's ``From`` shall be the empty string.
+<<<
+RATIONALE: >>>
+RFC 5321 uses the null reverse path for bounces and other delivery notifications, which code under test may send.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-019
+STATUS: Active
+TITLE: Lenient path syntax
+STATEMENT: >>>
+The ``FROM:`` and ``TO:`` keywords shall be matched case-insensitively, whitespace after the colon shall be ignored, and an address without angle brackets shall be accepted up to the first space.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.FailNext_MatchesTheCanonicalFormOfTheCommand
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-020
+STATUS: Active
+TITLE: Malformed MAIL path
+STATEMENT: >>>
+``MAIL`` whose argument does not start with ``FROM:``, has no address, or has an unclosed ``<`` shall be answered with ``501 5.5.4 Syntax: MAIL FROM:<address>`` and shall not start a transaction.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mail_SizeParameter_IsCheckedRobustly
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-021
+STATUS: Active
+TITLE: Nested MAIL refused
+STATEMENT: >>>
+``MAIL`` while a transaction is already in progress shall be answered with ``503 5.5.1 Nested MAIL command`` and shall leave the existing transaction unchanged.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-022
+STATUS: Active
+TITLE: SIZE parameter syntax
+STATEMENT: >>>
+A ``SIZE`` parameter (matched case-insensitively among the parameters after the path) whose value is empty or contains anything other than ASCII digits shall be answered with ``501 5.5.4 Syntax: SIZE=<number>``.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mail_SizeParameter_IsCheckedRobustly
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-023
+STATUS: Active
+TITLE: SIZE parameter over the limit
+STATEMENT: >>>
+A ``SIZE`` value greater than ``MaxMessageSize`` (default 10 MiB), including one too large to represent as a 64-bit integer, shall be answered with ``552 5.3.4 Message size exceeds fixed limit`` without an internal error.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mail_SizeParameter_IsCheckedRobustly
+- SmtpServerTests.OversizedMessage_IsRefusedUpFrontOrAfterData
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-024
+STATUS: Active
+TITLE: Parameters only after the path
+STATEMENT: >>>
+Text inside the angle-bracketed path shall not be interpreted as an ESMTP parameter; for example ``MAIL FROM:<SIZE=99999999999@x.test>`` shall be accepted.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mail_SizeParameter_IsCheckedRobustly
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-025
+STATUS: Active
+TITLE: RCPT TO adds a recipient
+STATEMENT: >>>
+A valid ``RCPT TO:<address>`` during a transaction shall be answered with ``250 2.1.5 OK`` and the address shall be appended to the transaction's recipients, so that every accepted recipient (including Bcc recipients not named in the headers) appears in ``SmtpMessage.Recipients`` in order.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-026
+STATUS: Active
+TITLE: RCPT requires MAIL
+STATEMENT: >>>
+``RCPT`` outside a mail transaction shall be answered with ``503 5.5.1 Need MAIL first``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-027
+STATUS: Active
+TITLE: Malformed RCPT path
+STATEMENT: >>>
+``RCPT`` whose argument does not start with ``TO:``, or whose address is missing or empty (including ``<>``), shall be answered with ``501 5.5.4 Syntax: RCPT TO:<address>`` and shall not add a recipient.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-028
+STATUS: Active
+TITLE: DATA requires a recipient
+STATEMENT: >>>
+``DATA`` before any recipient has been accepted shall be answered with ``503 5.5.1 Need RCPT first``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-029
+STATUS: Active
+TITLE: DATA acceptance
+STATEMENT: >>>
+``DATA`` with at least one recipient shall be answered with ``354 End data with <CR><LF>.<CR><LF>``; once the message is complete and accepted it shall be captured and answered with ``250 2.0.0 OK: queued as <n>``, where n is the number of messages the server has captured.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.DotStuffing_IsUndone_AndPipelinedCommandsAreAnswered
+- SmtpProtocolTests.Data_OnlyCrLfDotCrLfEndsTheMessage_AndLineEndingsAreKept
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-030
+STATUS: Active
+TITLE: Only CRLF.CRLF ends the data
+STATEMENT: >>>
+The message data shall end only at a line consisting of a single ``.`` that both follows a CRLF and is terminated by CRLF; a ``.`` line ended by a bare LF, or following a line ended by a bare LF, shall be treated as message content.
+<<<
+RATIONALE: >>>
+Accepting looser terminators would let a client smuggle a second message past a stricter relay (SMTP smuggling).
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Data_OnlyCrLfDotCrLfEndsTheMessage_AndLineEndingsAreKept
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-031
+STATUS: Active
+TITLE: Dot-unstuffing
+STATEMENT: >>>
+A leading ``.`` on a data line that starts after a CRLF shall be removed before the line is stored (RFC 5321 section 4.5.2).
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.DotStuffing_IsUndone_AndPipelinedCommandsAreAnswered
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-032
+STATUS: Active
+TITLE: Data stored verbatim
+STATEMENT: >>>
+Apart from dot-unstuffing and the removal of the terminating ``.`` line, ``SmtpMessage.Data`` shall hold the message bytes exactly as sent, without normalising line endings.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Data_OnlyCrLfDotCrLfEndsTheMessage_AndLineEndingsAreKept
+- SmtpServerTests.DotStuffing_IsUndone_AndPipelinedCommandsAreAnswered
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-033
+STATUS: Active
+TITLE: Oversized data refused after transfer
+STATEMENT: >>>
+When the received data exceeds ``MaxMessageSize``, the server shall read it to the end-of-data marker, answer ``552 5.3.4 Message size exceeds fixed limit``, capture nothing and end the transaction; data beyond the limit shall not be buffered.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.OversizedMessage_IsRefusedUpFrontOrAfterData
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-034
+STATUS: Active
+TITLE: Disconnect during data delivers nothing
+STATEMENT: >>>
+If the client disconnects before the end-of-data marker, no message shall be captured and no handler error shall be recorded.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.ClientVanishingMidData_DeliversNothing
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-035
+STATUS: Active
+TITLE: Transaction ends after data
+STATEMENT: >>>
+After the end-of-data marker the transaction shall be reset whatever the outcome (accepted, too large or refused by an injected reply), so the client may start a new transaction with ``MAIL`` on the same connection.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-036
+STATUS: Active
+TITLE: Pipelined commands
+STATEMENT: >>>
+Commands sent together without waiting for replies (PIPELINING, RFC 2920) shall each be answered in order.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.DotStuffing_IsUndone_AndPipelinedCommandsAreAnswered
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Other commands
+
+[REQUIREMENT]
+UID: ITS-SMTP-037
+STATUS: Active
+TITLE: Verbs are case-insensitive
+STATEMENT: >>>
+The command verb (the first space-separated word of the line) shall be matched case-insensitively.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.FailNext_MatchesTheCanonicalFormOfTheCommand
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-038
+STATUS: Active
+TITLE: RSET
+STATEMENT: >>>
+``RSET`` shall discard any mail transaction in progress and be answered with ``250 2.0.0 OK``, without changing the greeting or authentication state.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-039
+STATUS: Active
+TITLE: NOOP
+STATEMENT: >>>
+``NOOP`` shall be answered with ``250 2.0.0 OK`` without changing any state.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-040
+STATUS: Active
+TITLE: VRFY and HELP
+STATEMENT: >>>
+``VRFY`` shall be answered with ``252 2.1.5 Cannot verify, but will accept`` and ``HELP`` with ``214 2.0.0 See RFC 5321``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-041
+STATUS: Active
+TITLE: QUIT
+STATEMENT: >>>
+``QUIT`` shall be answered with ``221 2.0.0 Bye`` and the server shall then close the connection.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test. The BCL and MailKit clients in the tests send QUIT, but no test asserts the reply or the close.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-042
+STATUS: Active
+TITLE: Unknown commands
+STATEMENT: >>>
+Any unrecognised command shall be answered with ``500 5.5.1 Command not recognised`` and the session shall continue.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-043
+STATUS: Active
+TITLE: Over-long lines close the connection
+STATEMENT: >>>
+A command or data line longer than ``ServerOptions.MaxLineLength`` shall cause the server to record the transcript event ``line too long``, reply ``500 5.5.2 Line too long`` and close the connection, without recording a handler error.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.OverlongLine_GetsA500AndTheConnectionCloses_WithoutAHandlerError
+<<<
+COMMENT: >>>
+The test covers a command line; the same limit applies to lines inside DATA.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: STARTTLS
+
+[REQUIREMENT]
+UID: ITS-SMTP-044
+STATUS: Active
+TITLE: STARTTLS unavailable
+STATEMENT: >>>
+``STARTTLS`` shall be answered with ``502 5.5.1 STARTTLS not available`` when ``Tls`` is not set or the connection already uses TLS.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-045
+STATUS: Active
+TITLE: STARTTLS takes no argument
+STATEMENT: >>>
+``STARTTLS`` with an argument shall be answered with ``501 5.5.4 Syntax: STARTTLS`` and shall not start TLS.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-046
+STATUS: Active
+TITLE: STARTTLS upgrade resets the session
+STATEMENT: >>>
+A valid ``STARTTLS`` shall be answered with ``220 2.0.0 Ready to start TLS``, followed by a TLS handshake with the ``Tls`` certificate; afterwards the session shall forget the greeting, any transaction and any authentication (RFC 3207 section 4.2), so the client must send ``EHLO`` again, and the new EHLO reply shall not advertise STARTTLS.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.StartTls_RequiredBeforeMail_AndTranscriptStaysReadable
+- OrderNotifierTests.Confirmation_GoesOverTls_Authenticated_WithTheInvoiceAttached
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-047
+STATUS: Active
+TITLE: Input pipelined after STARTTLS is refused
+STATEMENT: >>>
+If any input is already buffered after the ``STARTTLS`` line, the server shall record the transcript event ``commands pipelined after STARTTLS``, reply ``554 5.5.0 Improper command pipelining after STARTTLS`` and close the connection without starting TLS.
+<<<
+RATIONALE: >>>
+Commands injected in plaintext behind STARTTLS would otherwise be processed as if they had arrived over TLS (CVE-2011-0411).
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.StartTls_WithPipelinedCommands_IsRefusedAndClosed
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-048
+STATUS: Active
+TITLE: RequireTls enforcement
+STATEMENT: >>>
+When ``RequireTls`` is true, ``MAIL`` on a connection not using TLS shall be answered with ``530 5.7.0 Must issue a STARTTLS command first``.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.StartTls_RequiredBeforeMail_AndTranscriptStaysReadable
+- OrderNotifierTests.Confirmation_GoesOverTls_Authenticated_WithTheInvoiceAttached
+<<<
+COMMENT: >>>
+``RequireTls`` without ``Tls`` (and without ``ImplicitTls``) is accepted by ``Start`` but makes every ``MAIL`` fail, since TLS can never be established.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Authentication
+
+[REQUIREMENT]
+UID: ITS-SMTP-049
+STATUS: Active
+TITLE: AUTH disabled without users
+STATEMENT: >>>
+When ``Users`` is null or empty, ``AUTH`` shall be answered with ``503 5.5.1 Authentication not enabled`` and ``MAIL`` shall not require authentication.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-050
+STATUS: Active
+TITLE: MAIL requires authentication
+STATEMENT: >>>
+When ``Users`` contains at least one account, ``MAIL`` before a successful ``AUTH`` shall be answered with ``530 5.7.0 Authentication required``.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.Auth_PlainAndLogin_AndMailRequiresIt
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-051
+STATUS: Active
+TITLE: AUTH PLAIN
+STATEMENT: >>>
+``AUTH PLAIN`` shall take the base64 response either as an initial response on the command line or after an empty ``334`` challenge, decode it as UTF-8 ``authzid NUL user NUL password``, and answer ``235 2.7.0 Authentication successful`` when the user and password match an entry in ``Users``.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Auth_FollowsRfc4954
+- SmtpServerTests.Auth_PlainAndLogin_AndMailRequiresIt
+<<<
+COMMENT: >>>
+The authorization identity is ignored. The empty-challenge form is not covered by a test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-052
+STATUS: Active
+TITLE: AUTH LOGIN
+STATEMENT: >>>
+``AUTH LOGIN`` shall prompt for the user name with ``334 VXNlcm5hbWU6`` (unless given as an initial response) and for the password with ``334 UGFzc3dvcmQ6``, each response being base64 UTF-8, and answer ``235 2.7.0 Authentication successful`` when they match an entry in ``Users``.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.Auth_PlainAndLogin_AndMailRequiresIt
+- OrderNotifierTests.Confirmation_GoesOverTls_Authenticated_WithTheInvoiceAttached
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-053
+STATUS: Active
+TITLE: Invalid credentials
+STATEMENT: >>>
+Credentials that do not match ``Users`` (or a PLAIN response without exactly three NUL-separated fields) shall be answered with ``535 5.7.8 Authentication credentials invalid`` and the session shall remain unauthenticated.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.Auth_PlainAndLogin_AndMailRequiresIt
+- OrderNotifierTests.WrongPassword_FailsWithoutSendingCredentialsInTheClear
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-054
+STATUS: Active
+TITLE: Unknown mechanism
+STATEMENT: >>>
+``AUTH`` with a mechanism other than PLAIN or LOGIN (matched case-insensitively), or with none, shall be answered with ``504 5.5.4 Unrecognised authentication type``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-055
+STATUS: Active
+TITLE: AUTH only after EHLO
+STATEMENT: >>>
+``AUTH`` before a successful ``EHLO`` or ``HELO`` shall be answered with ``503 5.5.1 Say EHLO first`` (RFC 4954 section 4).
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Auth_FollowsRfc4954
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-056
+STATUS: Active
+TITLE: No AUTH during a transaction
+STATEMENT: >>>
+``AUTH`` while a mail transaction is in progress shall be answered with ``503 5.5.1 AUTH not permitted during a mail transaction``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test. In practice this is reachable only when the transaction began before authentication was required, which cannot happen while ``Users`` is set; the check is defensive.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-057
+STATUS: Active
+TITLE: AUTH only once
+STATEMENT: >>>
+``AUTH`` after a successful authentication shall be answered with ``503 5.5.1 Already authenticated``.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-058
+STATUS: Active
+TITLE: Cancelling an exchange
+STATEMENT: >>>
+A response of ``*`` to a 334 challenge shall cancel the exchange with ``501 5.7.0 Authentication cancelled``, leave the session unauthenticated, and record the transcript message ``AUTH <mechanism> cancelled``.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Auth_FollowsRfc4954
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-059
+STATUS: Active
+TITLE: Empty SASL response
+STATEMENT: >>>
+A SASL response of ``=`` shall be treated as an empty string (RFC 4954 section 4).
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-060
+STATUS: Active
+TITLE: Undecodable SASL response
+STATEMENT: >>>
+A SASL response that is not valid base64 shall end the exchange with ``501 5.5.2 Cannot decode response`` and record the transcript message ``AUTH <mechanism> malformed response``.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Auth_FollowsRfc4954
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-061
+STATUS: Active
+TITLE: Disconnect during AUTH
+STATEMENT: >>>
+If the client disconnects while the server awaits a SASL response, the server shall record the transcript message ``AUTH <mechanism> aborted: connection closed`` and end the session without a handler error.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-062
+STATUS: Active
+TITLE: AUTH outcome in the transcript
+STATEMENT: >>>
+Each completed AUTH exchange shall record the received transcript message ``AUTH <mechanism> user=<user> accepted`` or ``AUTH <mechanism> user=<user> rejected``, and never the password.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.Auth_PlainAndLogin_AndMailRequiresIt
+- OrderNotifierTests.WrongPassword_FailsWithoutSendingCredentialsInTheClear
+<<<
+COMMENT: >>>
+The raw base64 responses still appear in the transcript as received lines; only the summary message omits the password.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-063
+STATUS: Active
+TITLE: Authenticated user on the message
+STATEMENT: >>>
+``SmtpMessage.User`` shall be the user name the session authenticated as, or null if it did not authenticate.
+<<<
+VERIFIED_BY: >>>
+- OrderNotifierTests.Confirmation_GoesOverTls_Authenticated_WithTheInvoiceAttached
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Fault injection and interception
+
+[REQUIREMENT]
+UID: ITS-SMTP-064
+STATUS: Active
+TITLE: FailNext
+STATEMENT: >>>
+``FailNext(command, reply, times)`` shall answer the next ``times`` (default 1) commands matching the ``LineMatcher`` with ``reply`` instead of handling them, and then stop matching; ``times`` less than 1 shall throw ``ArgumentOutOfRangeException``.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.FailNext_Greylisting_ThenTheRetryIsDelivered
+- OrderNotifierTests.Greylisting_IsRetried_AndDeliversExactlyOnce
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-065
+STATUS: Active
+TITLE: FailAlways
+STATEMENT: >>>
+``FailAlways(command, reply)`` shall answer every matching command with ``reply`` for the lifetime of the server.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.FailAlways_RejectsOneDomain_AndEndOfDataCanBeRefused
+- OrderNotifierTests.PermanentRejection_IsNotRetried
+- SmtpTests.a rejected recipient surfaces as SmtpFailedRecipientException
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-066
+STATUS: Active
+TITLE: Matching the canonical command form
+STATEMENT: >>>
+A rule shall match if its pattern matches either the command line as sent or its canonical form, in which the verb is upper-cased and, for ``MAIL`` and ``RCPT``, the keyword before the colon is upper-cased with surrounding whitespace removed and no space follows the colon; so ``RCPT TO:<a@b>`` also matches ``rcpt to: <a@b>``.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.FailNext_MatchesTheCanonicalFormOfTheCommand
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-067
+STATUS: Active
+TITLE: Refusing a message at end of data
+STATEMENT: >>>
+A rule or interceptor matching the end-of-data command ``.`` shall be applied after the data has been received; its reply shall replace the 250 acceptance and the message shall not be captured.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.FailAlways_RejectsOneDomain_AndEndOfDataCanBeRefused
+<<<
+COMMENT: >>>
+An oversized message is refused with 552 before any ``.`` rule is consulted, so such a rule is not consumed.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-068
+STATUS: Active
+TITLE: Injected replies leave state unchanged
+STATEMENT: >>>
+When a rule or interceptor supplies a reply, the command shall not be processed: the session state shall not change, so for example an injected 250 to ``MAIL`` does not start a transaction and a refused ``RCPT`` does not add a recipient.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.FailAlways_RejectsOneDomain_AndEndOfDataCanBeRefused
+<<<
+COMMENT: >>>
+The test covers the end-of-data case (nothing captured); state retention for MAIL and RCPT is not asserted directly.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-069
+STATUS: Active
+TITLE: Rule precedence
+STATEMENT: >>>
+Rules shall be consulted in the order they were added, the first matching rule with uses remaining supplying the reply, and ``Intercept`` shall be called only when no rule matched.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpServer.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-070
+STATUS: Active
+TITLE: Intercept hook
+STATEMENT: >>>
+``Intercept``, when set, shall be called with an ``SmtpCommand`` (the full ``Line``, the upper-cased ``Verb`` and the ``Connection``; for end of data the line and verb ``.`` and the received ``Message``) before each command is handled; a non-null result shall be sent as the reply instead of handling the command, and null shall let the server proceed.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.Intercept_421_ClosesTheConnection
+- OrderNotifierTests.ConnectionDroppedBeforeTheServerAccepted_IsRetried
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-071
+STATUS: Active
+TITLE: Injected 421 closes the connection
+STATEMENT: >>>
+After sending an injected reply starting with ``421`` (from a rule or ``Intercept``) the server shall close the connection.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.Intercept_421_ClosesTheConnection
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-072
+STATUS: Active
+TITLE: Connection ended by an interceptor
+STATEMENT: >>>
+If the connection has been terminated (for example by ``Connection.Abort()`` in ``Intercept``) when the hook returns, the server shall send nothing further, end the session and, for end of data, not capture the message.
+<<<
+VERIFIED_BY: >>>
+- OrderNotifierTests.ConnectionDroppedBeforeTheServerAccepted_IsRetried
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-073
+STATUS: Active
+TITLE: Hooks see commands only
+STATEMENT: >>>
+Rules and ``Intercept`` shall be applied to command lines and to the end-of-data command, but not to individual message data lines or to SASL responses during an AUTH exchange.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpSession.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: Captured messages and transcripts
+
+[REQUIREMENT]
+UID: ITS-SMTP-074
+STATUS: Active
+TITLE: Captured messages in order
+STATEMENT: >>>
+``SmtpServer.Messages`` shall return a snapshot of every accepted message, from all connections, in the order they were accepted.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody
+- SmtpServerTests.FailNext_Greylisting_ThenTheRetryIsDelivered
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-075
+STATUS: Active
+TITLE: Envelope on the message
+STATEMENT: >>>
+Each ``SmtpMessage`` shall carry the envelope sender ``From``, the accepted ``Recipients``, the raw ``Data``, the authenticated ``User``, whether it arrived over TLS (``Tls``), the ``ConnectionId`` used in the transcript, and the UTC time of acceptance ``ReceivedAt``.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody
+- OrderNotifierTests.Confirmation_GoesOverTls_Authenticated_WithTheInvoiceAttached
+- SmtpServerTests.StartTls_RequiredBeforeMail_AndTranscriptStaysReadable
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-076
+STATUS: Active
+TITLE: Message text and summary
+STATEMENT: >>>
+``SmtpMessage.Text`` shall be ``Data`` decoded as UTF-8, and ``ToString()`` shall return ``<From> -> <recipients joined by ", ">: <Subject>``.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Data_OnlyCrLfDotCrLfEndsTheMessage_AndLineEndingsAreKept
+- SmtpProtocolTests.Mime_MalformedEncodingsAreLeftAsSent_NeverThrown
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-077
+STATUS: Active
+TITLE: Waiting for a matching message
+STATEMENT: >>>
+``WaitForMessageAsync(predicate, timeout, cancellationToken)`` shall complete with the first captured message matching ``predicate`` (any message when null), whether it arrived before or during the call, and shall throw ``TimeoutException`` after ``timeout`` (default 5 seconds) with a description listing the messages received.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.WaitForMessage_ReturnsTheMatchingMail
+<<<
+COMMENT: >>>
+The timeout path is not tested.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-078
+STATUS: Active
+TITLE: Waiting for a message count
+STATEMENT: >>>
+``WaitForMessagesAsync(count, timeout, cancellationToken)`` shall complete once at least ``count`` messages have been captured and throw ``TimeoutException`` if that does not happen within ``timeout`` (default 5 seconds).
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpServer.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-079
+STATUS: Active
+TITLE: Accepted message in the transcript
+STATEMENT: >>>
+Each captured message shall be recorded in the connection's transcript as the received message ``MESSAGE <From> -> <recipients>: <Subject>``.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody
+<<<
+
+[REQUIREMENT]
+UID: ITS-SMTP-080
+STATUS: Active
+TITLE: Plaintext transcript after STARTTLS
+STATEMENT: >>>
+The transcript of ``SmtpServer.Tcp`` shall record the dialogue in plaintext both before and after STARTTLS, including message content.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.StartTls_RequiredBeforeMail_AndTranscriptStaysReadable
+- OrderNotifierTests.WrongPassword_FailsWithoutSendingCredentialsInTheClear
+<<<
+
+[[/SECTION]]
+
+[[SECTION]]
+TITLE: MIME reading of captured messages
+
+[REQUIREMENT]
+UID: ITS-MIME-001
+STATUS: Active
+TITLE: Header fields in order, unfolded
+STATEMENT: >>>
+``SmtpMessage.Headers`` shall list the header fields of the top-level entity in order, each name trimmed, each value unfolded by removing the CRLF before a continuation line while keeping its leading whitespace, and trimmed at both ends.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_FoldedHeaderKeepsItsWhitespace_AndEncodedWordsDecode
+<<<
+COMMENT: >>>
+Only CRLF is recognised as a line break in the header section; a message using bare LF line endings has no recognised header/body separator, so its whole content is read as headers.
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-002
+STATUS: Active
+TITLE: Header lookup
+STATEMENT: >>>
+``Header(name)`` shall return the value of the first header field with that name, compared case-insensitively, or null if there is none; ``Subject`` shall equal ``Header("Subject")``.
+<<<
+VERIFIED_BY: >>>
+- SmtpServerTests.BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody
+- SmtpProtocolTests.Mime_FoldedHeaderKeepsItsWhitespace_AndEncodedWordsDecode
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-003
+STATUS: Active
+TITLE: RFC 2047 encoded words
+STATEMENT: >>>
+Encoded words of the form ``=?charset?B?text?=`` and ``=?charset?Q?text?=`` in header values shall be decoded in their charset (with ``_`` meaning space in Q encoding), and whitespace between two adjacent encoded words shall be removed.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_FoldedHeaderKeepsItsWhitespace_AndEncodedWordsDecode
+- SmtpServerTests.BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-004
+STATUS: Active
+TITLE: Malformed encoded words left as sent
+STATEMENT: >>>
+An encoded word whose charset is unknown or whose B-encoded text is not valid base64 shall be left exactly as sent (RFC 2047 section 6.3).
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_MalformedEncodingsAreLeftAsSent_NeverThrown
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-005
+STATUS: Active
+TITLE: Raw 8-bit header values
+STATEMENT: >>>
+A header value containing raw 8-bit bytes shall be decoded as UTF-8 when the bytes are valid UTF-8 (as sent with SMTPUTF8), and otherwise kept byte for byte as Latin-1 characters.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpMessage.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-006
+STATUS: Active
+TITLE: Charsets without global registration
+STATEMENT: >>>
+Charset names in encoded words and ``Content-Type`` parameters shall be resolved to the built-in .NET encodings and also to the Windows and ISO code pages of ``CodePagesEncodingProvider``, without registering that provider process-wide; surrounding quotes and whitespace in the name shall be ignored.
+<<<
+RATIONALE: >>>
+Registering an encoding provider changes ``Encoding.GetEncoding`` for the whole test process, which a test double must not do.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_EightBitBodyIsDecodedInItsDeclaredCharset
+- SmtpProtocolTests.Mime_FoldedHeaderKeepsItsWhitespace_AndEncodedWordsDecode
+<<<
+COMMENT: >>>
+The tests decode windows-1252 and iso-8859-1; that the provider is not registered globally is not asserted.
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-007
+STATUS: Active
+TITLE: Body charset
+STATEMENT: >>>
+A text body shall be decoded in the charset named by the ``charset`` parameter of its ``Content-Type``, or as UTF-8 when the parameter is absent or names an unknown charset.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_EightBitBodyIsDecodedInItsDeclaredCharset
+- SmtpServerTests.BclSmtpClient_MessageIsCaptured_WithDecodedSubjectAndBody
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-008
+STATUS: Active
+TITLE: Quoted-printable bodies
+STATEMENT: >>>
+A body with ``Content-Transfer-Encoding: quoted-printable`` shall be decoded, with ``=XX`` hex escapes turned into bytes and soft line breaks (``=`` at the end of a line) removed, before charset decoding.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_TextBodySkipsAttachments_AndSearchesNestedParts
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-009
+STATUS: Active
+TITLE: Base64 bodies
+STATEMENT: >>>
+A body with ``Content-Transfer-Encoding: base64`` shall be decoded ignoring whitespace and tolerating missing padding; a body that is not valid base64 shall be left as sent.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_MalformedEncodingsAreLeftAsSent_NeverThrown
+<<<
+COMMENT: >>>
+The test covers invalid base64 left as sent; successful base64 decoding is exercised only indirectly by clients that choose base64.
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-010
+STATUS: Active
+TITLE: Other transfer encodings
+STATEMENT: >>>
+A body with no ``Content-Transfer-Encoding`` or any other value (such as ``7bit`` or ``8bit``) shall be taken byte for byte and decoded only by its charset.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_EightBitBodyIsDecodedInItsDeclaredCharset
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-011
+STATUS: Active
+TITLE: Multipart boundaries per RFC 2046
+STATEMENT: >>>
+An entity whose ``Content-Type`` is ``multipart/*`` with a non-empty ``boundary`` parameter (quoted or not) shall be split into parts at delimiter lines, ``--boundary`` preceded by CRLF (or at the start of the body); the preamble before the first delimiter and everything after the closing ``--boundary--`` shall be ignored, and boundary text that does not begin a line shall be treated as content.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_TextBodySkipsAttachments_AndSearchesNestedParts
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-012
+STATUS: Active
+TITLE: Parts without headers
+STATEMENT: >>>
+A body part that begins with a blank line shall be treated as having no header fields, and therefore as ``text/plain`` (RFC 2046 section 5.1.1).
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpMessage.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-013
+STATUS: Active
+TITLE: Default content type
+STATEMENT: >>>
+An entity without a ``Content-Type`` header shall be treated as ``text/plain``.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_MalformedEncodingsAreLeftAsSent_NeverThrown
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-014
+STATUS: Active
+TITLE: TextBody selects the first plain-text part
+STATEMENT: >>>
+``TextBody`` shall return the decoded body of the first ``text/plain`` entity that is not an attachment (``Content-Disposition`` starting with ``attachment``), searching nested multipart entities depth-first in order; for a non-multipart message this is its own decoded body.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_TextBodySkipsAttachments_AndSearchesNestedParts
+- OrderNotifierTests.Confirmation_GoesOverTls_Authenticated_WithTheInvoiceAttached
+- SmtpTests.the ready-made SMTP server captures the mail
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-015
+STATUS: Active
+TITLE: TextBody fallback
+STATEMENT: >>>
+When no suitable ``text/plain`` part exists, ``TextBody`` shall return the decoded body of the first leaf part, or the empty string if there is none.
+<<<
+VERIFIED_BY: >>>
+- Review: src/Intertube.Stub/Smtp/SmtpMessage.cs
+<<<
+COMMENT: >>>
+No automated test.
+<<<
+
+[REQUIREMENT]
+UID: ITS-MIME-016
+STATUS: Active
+TITLE: MIME reading never throws
+STATEMENT: >>>
+Reading ``Headers``, ``Header``, ``Subject``, ``TextBody`` or ``ToString()`` shall never throw because of malformed message content; anything that cannot be decoded shall be returned as it was sent, and ``Data`` shall be unaffected.
+<<<
+VERIFIED_BY: >>>
+- SmtpProtocolTests.Mime_MalformedEncodingsAreLeftAsSent_NeverThrown
+<<<
+
+[[/SECTION]]

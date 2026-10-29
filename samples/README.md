@@ -121,7 +121,7 @@ The surviving mutants of the first run fell into three groups:
   - RESP boundaries: max nesting depth, max line length, a CR at index 0, refusing to preallocate from `*2147483647`
   - URL canonical form (`ToUrl` always bracketing hosts or always adding `?` still round-trips, so the property alone cannot catch it)
   - equality against nil and null
-- **Still surviving (25), reviewed as equivalent:** `leaveOpen` flags, disposal statements,
+- **Still surviving (23 after the last run), reviewed as equivalent:** `leaveOpen` flags, disposal statements,
   `IndexOf(...) < 0` compared with `<= 0` where index 0 fails a later check anyway, and boundaries at
   `int.MaxValue` and 512 MB.
 
