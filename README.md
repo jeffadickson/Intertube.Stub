@@ -26,6 +26,15 @@ Console.WriteLine(server.Port);   // ephemeral port on 127.0.0.1
 - **Protocol helpers:** `Conversation` for scripted, in-order exchanges and `LineResponder` for rule tables.
 - **Ready-made servers:** SFTP (`SftpServer`, over SSH) and SMTP (`SmtpServer`, with STARTTLS and AUTH), each capturing what clients send.
 
+## Install
+
+```
+dotnet add package Intertube.Stub --prerelease
+```
+
+The core servers live in the `Intertube.Stub` namespace; the ready-made SMTP and SFTP servers are in
+`Intertube.Stub.Smtp` and `Intertube.Stub.Sftp`. The package targets net8.0 and net10.0.
+
 ## Transcripts and waiting
 
 ```csharp
@@ -159,6 +168,11 @@ It is tested against OpenSSH 9.5 and 10.6 (`tests/.../Sftp`) and SSH.NET (`examp
 It is not a production server: it has no rate limiting, it does no privilege separation, and its
 Ed25519 verification is not constant-time.
 
+> **Keep it on loopback.** `SftpServer` binds `127.0.0.1` by default; don't change `Address` to a
+> non-loopback address. With no `Users` configured it accepts any login, and with a
+> `DirectorySftpFileSystem` that means anyone who can reach the port can read and write that
+> directory.
+
 ## SMTP
 
 `Intertube.Stub.Smtp.SmtpServer` accepts any valid SMTP dialogue and captures the mail, so tests
@@ -191,8 +205,8 @@ hand `mail.Data` to MimeKit.
 - `src/Intertube.Stub` contains the library (net8.0 and net10.0)
 - `tests/Intertube.Stub.Tests` contains the xUnit tests
 - `examples/Intertube.Stub.FSharp` shows the same from F#, with `task { }` and an FsCheck property
-- `examples/` contains realistic systems under test (HttpClient, SmtpClient, MailKit SMTP and IMAP, FluentFTP, SSH.NET SFTP, HL7 MLLP, DNS, SOCKS5/HTTP proxies, Docker over a Unix socket, syslog/StatsD, SCPI, TLS pinning, binary RPC, memcached), each mocked with Intertube.Stub; see [examples/README.md](examples/README.md)
-- `samples/` contains RedisLite, a complete Redis client and CLI tested with Intertube.Stub, FsCheck, Hedgehog and Stryker; see [samples/README.md](samples/README.md)
+- `examples/` contains realistic systems under test (HttpClient, SmtpClient, MailKit SMTP and IMAP, FluentFTP, SSH.NET SFTP, HL7 MLLP, DNS, SOCKS5/HTTP proxies, Docker over a Unix socket, syslog/StatsD, SCPI, TLS pinning, binary RPC, memcached), each mocked with Intertube.Stub; see [examples/README.md](https://github.com/jeffadickson/Intertube.Stub/blob/main/examples/README.md)
+- `samples/` contains RedisLite, a complete Redis client and CLI tested with Intertube.Stub, FsCheck, Hedgehog and Stryker; see [samples/README.md](https://github.com/jeffadickson/Intertube.Stub/blob/main/samples/README.md)
 
 ```
 dotnet test
@@ -200,4 +214,6 @@ dotnet test
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/jeffadickson/Intertube.Stub/blob/main/LICENSE).
+For reporting vulnerabilities, see [SECURITY.md](https://github.com/jeffadickson/Intertube.Stub/blob/main/SECURITY.md);
+for building and testing, see [CONTRIBUTING.md](https://github.com/jeffadickson/Intertube.Stub/blob/main/CONTRIBUTING.md).

@@ -18,6 +18,17 @@
     <Description>Tiny embedded TCP, UDP, Unix-socket, TLS, SFTP and SMTP servers for tests: ephemeral ports, line and stream handlers, transcripts, assertions and fault injection. Think WireMock for arbitrary wire protocols.</Description>
     <PackageTags>tcp;udp;socket;tls;sftp;ssh;smtp;mock;stub;test-double;testing;server</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Copyright>Copyright (c) 2026 Jeff Dickson</Copyright>
+
+    <!-- Symbols and SourceLink (built into the .NET 8+ SDK for GitHub) -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">true</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
