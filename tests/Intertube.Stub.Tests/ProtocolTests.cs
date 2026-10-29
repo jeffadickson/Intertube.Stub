@@ -137,6 +137,61 @@ public class ProtocolTests
     }
 
     [Fact]
+    public async Task UpgradeToTls_ChecksItsPreconditions()
+    {
+        var tls = TlsOptions.SelfSigned();
+        Exception? noOptions = null, buffered = null, twice = null;
+        await using var server = TcpServer.Listen(0, async connection =>
+        {
+            noOptions = await Record.ExceptionAsync(() => connection.UpgradeToTlsAsync()); // none given, none on the server
+            var pending = await connection.Input.ReadAsync();
+            connection.Input.AdvanceTo(pending.Buffer.Start); // leave the byte unread
+            buffered = await Record.ExceptionAsync(() => connection.UpgradeToTlsAsync(tls));
+            await connection.ReadExactlyAsync(1);
+            await connection.WriteLineAsync("go");
+            await connection.UpgradeToTlsAsync(tls);
+            twice = await Record.ExceptionAsync(() => connection.UpgradeToTlsAsync(tls));
+            await connection.WriteLineAsync("done");
+        });
+        await using var client = await server.ConnectAsync();
+
+        await client.WriteAsync("x");
+        Assert.Equal("go", await client.ReadLineAsync());
+        await client.UpgradeToTlsAsync(tls);
+        Assert.Equal("done", await client.ReadLineAsync());
+
+        Assert.Contains("No TlsOptions", Assert.IsType<InvalidOperationException>(noOptions).Message);
+        Assert.Contains("1 unread bytes", Assert.IsType<InvalidOperationException>(buffered).Message);
+        Assert.Contains("already using TLS", Assert.IsType<InvalidOperationException>(twice).Message);
+        server.ThrowIfFaulted();
+    }
+
+    [Fact]
+    public void LineMatcher_ExactTreatsWildcardsAsText()
+    {
+        var matcher = LineMatcher.Exact("GET *");
+
+        Assert.True(matcher.IsMatch("GET *"));
+        Assert.False(matcher.IsMatch("GET /index.html"));
+        Assert.False(matcher.IsMatch("get *"));
+        Assert.False(matcher.IsMatch("GET * "));
+        Assert.True(LineMatcher.Exact("get ?", StringComparison.OrdinalIgnoreCase).IsMatch("GET ?"));
+        Assert.False(LineMatcher.Exact("get ?", StringComparison.OrdinalIgnoreCase).IsMatch("GET x"));
+    }
+
+    [Fact]
+    public void LineMatcher_WhereAndAny()
+    {
+        var digits = LineMatcher.Where(line => line.Length > 0 && line.All(char.IsAsciiDigit), "digits");
+
+        Assert.True(digits.IsMatch("2024"));
+        Assert.False(digits.IsMatch("20x4"));
+        Assert.Equal("digits", digits.ToString());
+        Assert.True(LineMatcher.Any.IsMatch(""));
+        Assert.True(LineMatcher.Any.IsMatch("anything at all *"));
+    }
+
+    [Fact]
     public async Task UnixSocket_UsesTemporaryPathAndCleansUp()
     {
         string path;

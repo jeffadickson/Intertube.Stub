@@ -143,6 +143,13 @@ public class TcpServerTests
     }
 
     [Fact]
+    public void MaxConcurrencyBelowOne_Throws()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => TcpServer.Listen(0, Handler.Echo, new ServerOptions { MaxConcurrency = 0 }));
+        Assert.Throws<ArgumentOutOfRangeException>(() => TcpServer.Listen(0, Handler.Echo, new ServerOptions { MaxConcurrency = -1 }));
+    }
+
+    [Fact]
     public async Task Dispose_StopsPromptlyEvenWithBlockedHandlers()
     {
         var server = TcpServer.Listen(0, Handler.Hang);

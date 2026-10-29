@@ -29,7 +29,10 @@ public sealed record UdpServerOptions
     /// <summary>Seed for <see cref="DropRate"/>, so loss patterns are reproducible.</summary>
     public int Seed { get; init; }
 
-    /// <summary>Largest datagram accepted.</summary>
+    /// <summary>
+    /// Largest datagram accepted. A larger one is discarded on every OS, without reaching the handler or
+    /// the transcript, and logged as "datagram larger than MaxDatagramSize".
+    /// </summary>
     public int MaxDatagramSize { get; init; } = 65_527;
 
     public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(2);
@@ -220,7 +223,9 @@ public sealed class UdpServer : IAsyncDisposable
     private async Task ReceiveLoopAsync()
     {
         var token = _stopping.Token;
-        var buffer = new byte[Options.MaxDatagramSize];
+        // One byte to spare, so a datagram over the limit is seen as such: Unix truncates silently to the
+        // buffer size, while Windows fails the receive with MessageSize once a datagram does not fit.
+        var buffer = new byte[Options.MaxDatagramSize + 1];
         EndPoint any = EndPoint.AddressFamily == AddressFamily.InterNetworkV6 ? new IPEndPoint(IPAddress.IPv6Any, 0) : new IPEndPoint(IPAddress.Any, 0);
         try
         {
@@ -233,9 +238,17 @@ public sealed class UdpServer : IAsyncDisposable
                 }
                 catch (SocketException ex) when (!token.IsCancellationRequested)
                 {
-                    // Windows reports a datagram over MaxDatagramSize (Unix truncates it silently); other
-                    // errors are typically an ICMP port unreachable left over from an earlier send.
-                    if (ex.SocketErrorCode == SocketError.MessageSize) Log($"<- datagram larger than MaxDatagramSize ({Options.MaxDatagramSize}) discarded");
+                    // An oversized datagram or an ICMP error left over from an earlier send concerns one
+                    // datagram: carry on. Anything else may persist, so back off a little rather than spin.
+                    if (ex.SocketErrorCode == SocketError.MessageSize) LogOversized();
+                    else if (ex.SocketErrorCode is not (SocketError.ConnectionReset or SocketError.NetworkReset))
+                        await Task.Delay(10, token).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (result.ReceivedBytes > Options.MaxDatagramSize)
+                {
+                    LogOversized();
                     continue;
                 }
 
@@ -282,6 +295,8 @@ public sealed class UdpServer : IAsyncDisposable
         // The inbox is complete now; datagrams still queued are skipped.
         await Task.WhenAny(_dispatchLoop, Task.Delay(Options.ShutdownTimeout)).ConfigureAwait(false);
     }
+
+    private void LogOversized() => Log($"<- datagram larger than MaxDatagramSize ({Options.MaxDatagramSize}) discarded");
 
     private void Log(string line)
     {
